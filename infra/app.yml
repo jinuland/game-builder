@@ -1,0 +1,187 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: GAME FORGE Next.js application on Lambda container
+
+Parameters:
+  ImageUri:
+    Type: String
+  TableName:
+    Type: String
+  UserPoolId:
+    Type: String
+  UserPoolClientId:
+    Type: String
+  CognitoDomain:
+    Type: String
+  AppSecretArn:
+    Type: String
+  InviteSecretArn:
+    Type: String
+  BuildSigningSecretArn:
+    Type: String
+  OntologySnapshotBucketName:
+    Type: String
+  GraphWorkerArn:
+    Type: String
+    Default: ""
+  PublicUrl:
+    Type: String
+    Default: ""
+  BedrockModelId:
+    Type: String
+    Default: us.anthropic.claude-sonnet-4-6
+  BedrockRegion:
+    Type: String
+    Default: us-east-1
+
+Conditions:
+  HasGraphWorker: !Not [!Equals [!Ref GraphWorkerArn, ""]]
+
+Resources:
+  FunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: GameForgeDataAndAI
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Query
+                Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: !Sub arn:${AWS::Partition}:s3:::${OntologySnapshotBucketName}/projects/*
+              - !If
+                - HasGraphWorker
+                - Effect: Allow
+                  Action: lambda:InvokeFunction
+                  Resource: !Ref GraphWorkerArn
+                - !Ref AWS::NoValue
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref AppSecretArn
+                  - !Ref InviteSecretArn
+                  - !Ref BuildSigningSecretArn
+
+  GameForgeFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: game-forge
+      PackageType: Image
+      Code:
+        ImageUri: !Ref ImageUri
+      Role: !GetAtt FunctionRole.Arn
+      Architectures: [x86_64]
+      MemorySize: 2048
+      Timeout: 120
+      EphemeralStorage:
+        Size: 1024
+      Environment:
+        Variables:
+          GAMEFORGE_TABLE_NAME: !Ref TableName
+          GAMEFORGE_ONTOLOGY_SNAPSHOT_BUCKET: !Ref OntologySnapshotBucketName
+          GAMEFORGE_GRAPH_WORKER_ARN: !Ref GraphWorkerArn
+          COGNITO_USER_POOL_ID: !Ref UserPoolId
+          COGNITO_CLIENT_ID: !Ref UserPoolClientId
+          COGNITO_DOMAIN: !Ref CognitoDomain
+          GAMEFORGE_PUBLIC_URL: !Ref PublicUrl
+          GAMEFORGE_COOKIE_SECRET: !Sub "{{resolve:secretsmanager:${AppSecretArn}:SecretString:cookieSecret}}"
+          GAMEFORGE_INVITE_SECRET: !Sub "{{resolve:secretsmanager:${InviteSecretArn}:SecretString:inviteSecret}}"
+          GAMEFORGE_BUILD_SIGNING_SECRET: !Sub "{{resolve:secretsmanager:${BuildSigningSecretArn}:SecretString:buildSigningSecret}}"
+          GAMEFORGE_BEDROCK_REGION: !Ref BedrockRegion
+          GAMEFORGE_BEDROCK_MODEL_ID: !Ref BedrockModelId
+          GAMEFORGE_BEDROCK_MAX_TOKENS: "4000"
+          GAMEFORGE_MODEL_REQUESTS_PER_MINUTE: "20"
+          GAMEFORGE_MODEL_REQUESTS_PER_DAY: "100"
+          GAMEFORGE_MODEL_TOKENS_PER_DAY: "500000"
+          GAMEFORGE_MODEL_COST_USD_PER_DAY: "10"
+
+  FunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !GetAtt GameForgeFunction.Arn
+      AuthType: AWS_IAM
+      InvokeMode: BUFFERED
+
+  OriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub game-forge-lambda-${AWS::AccountId}
+        Description: Signed access from CloudFront to the private Game Forge Lambda URL
+        OriginAccessControlOriginType: lambda
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: GAME FORGE workshop
+        Enabled: true
+        HttpVersion: http2and3
+        PriceClass: PriceClass_200
+        Origins:
+          - Id: GameForgeLambda
+            DomainName: !Select [2, !Split ["/", !GetAtt FunctionUrl.FunctionUrl]]
+            OriginAccessControlId: !GetAtt OriginAccessControl.Id
+            CustomOriginConfig:
+              HTTPSPort: 443
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols: [TLSv1.2]
+              OriginReadTimeout: 120
+        DefaultCacheBehavior:
+          TargetOriginId: GameForgeLambda
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+          OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+
+  CloudFrontFunctionUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref GameForgeFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: cloudfront.amazonaws.com
+      FunctionUrlAuthType: AWS_IAM
+      SourceArn: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}
+
+  CloudFrontFunctionInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref GameForgeFunction
+      Action: lambda:InvokeFunction
+      Principal: cloudfront.amazonaws.com
+      InvokedViaFunctionUrl: true
+      SourceArn: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}
+
+Outputs:
+  ApplicationUrl:
+    Value: !Sub https://${Distribution.DomainName}/
+  OriginFunctionUrl:
+    Value: !GetAtt FunctionUrl.FunctionUrl
+  FunctionName:
+    Value: !Ref GameForgeFunction

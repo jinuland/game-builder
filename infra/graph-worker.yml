@@ -1,0 +1,199 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Private Neptune Analytics projection and query worker for GAME FORGE
+
+Parameters:
+  ArtifactBucketName:
+    Type: String
+  ArtifactKey:
+    Type: String
+  OntologySnapshotBucketName:
+    Type: String
+  ProvisionedMemory:
+    Type: Number
+    Default: 16
+    MinValue: 16
+  VectorSearchDimension:
+    Type: Number
+    Default: 1024
+    MinValue: 1
+  DeletionProtection:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+
+Conditions:
+  ProtectGraph: !Equals [!Ref DeletionProtection, "true"]
+
+Resources:
+  GraphVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.42.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: game-forge-graph
+
+  GraphSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref GraphVpc
+      CidrBlock: 10.42.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+
+  GraphSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref GraphVpc
+      CidrBlock: 10.42.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+
+  GraphRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref GraphVpc
+
+  GraphSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref GraphRouteTable
+      SubnetId: !Ref GraphSubnetA
+
+  GraphSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref GraphRouteTable
+      SubnetId: !Ref GraphSubnetB
+
+  SnapshotS3Endpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Gateway
+      VpcId: !Ref GraphVpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
+      RouteTableIds: [!Ref GraphRouteTable]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: "*"
+            Action: s3:GetObject
+            Resource: !Sub arn:${AWS::Partition}:s3:::${OntologySnapshotBucketName}/projects/*
+
+  GraphWorkerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: GAME FORGE graph worker
+      VpcId: !Ref GraphVpc
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 8182
+          ToPort: 8182
+          CidrIp: 10.42.0.0/16
+
+  GraphEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: GAME FORGE private Neptune endpoint
+      VpcId: !Ref GraphVpc
+      SecurityGroupEgress: []
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref GraphWorkerSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 8182
+          ToPort: 8182
+          SourceSecurityGroupId: !Ref GraphWorkerSecurityGroup
+
+  OntologyGraph:
+    Type: AWS::NeptuneGraph::Graph
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      GraphName: game-forge-ontology
+      ProvisionedMemory: !Ref ProvisionedMemory
+      ReplicaCount: 0
+      PublicConnectivity: false
+      DeletionProtection: !If [ProtectGraph, true, false]
+      VectorSearchConfiguration:
+        VectorSearchDimension: !Ref VectorSearchDimension
+      Tags:
+        - Key: Application
+          Value: game-forge
+
+  PrivateGraphEndpoint:
+    Type: AWS::NeptuneGraph::PrivateGraphEndpoint
+    Properties:
+      GraphIdentifier: !GetAtt OntologyGraph.GraphId
+      VpcId: !Ref GraphVpc
+      SubnetIds: [!Ref GraphSubnetA, !Ref GraphSubnetB]
+      SecurityGroupIds: [!Ref GraphEndpointSecurityGroup]
+
+  GraphWorkerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: GameForgePrivateGraphData
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub arn:${AWS::Partition}:s3:::${OntologySnapshotBucketName}/projects/*
+              - Effect: Allow
+                Action:
+                  - neptune-graph:ReadDataViaQuery
+                  - neptune-graph:WriteDataViaQuery
+                  - neptune-graph:DeleteDataViaQuery
+                Resource: !GetAtt OntologyGraph.GraphArn
+
+  GraphWorkerFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: PrivateGraphEndpoint
+    Properties:
+      FunctionName: game-forge-graph-worker
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Role: !GetAtt GraphWorkerRole.Arn
+      MemorySize: 1024
+      Timeout: 120
+      ReservedConcurrentExecutions: 4
+      Code:
+        S3Bucket: !Ref ArtifactBucketName
+        S3Key: !Ref ArtifactKey
+      Environment:
+        Variables:
+          GAMEFORGE_NEPTUNE_GRAPH_ID: !GetAtt OntologyGraph.GraphId
+          GAMEFORGE_ONTOLOGY_SNAPSHOT_BUCKET: !Ref OntologySnapshotBucketName
+      VpcConfig:
+        SecurityGroupIds: [!Ref GraphWorkerSecurityGroup]
+        SubnetIds: [!Ref GraphSubnetA, !Ref GraphSubnetB]
+
+Outputs:
+  GraphId:
+    Value: !GetAtt OntologyGraph.GraphId
+  GraphArn:
+    Value: !GetAtt OntologyGraph.GraphArn
+  GraphWorkerArn:
+    Value: !GetAtt GraphWorkerFunction.Arn
+  PrivateGraphEndpointId:
+    Value: !GetAtt PrivateGraphEndpoint.VpcEndpointId

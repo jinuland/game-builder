@@ -1,0 +1,89 @@
+{
+  "schema": "game-forge/v1",
+  "title": "Project Mnemosyne",
+  "genre": "Narrative Puzzle Adventure",
+  "ontology": {
+    "version": 1,
+    "nodes": [
+      {
+        "id": "world",
+        "kind": "World",
+        "name": "기억을 먹는 도시",
+        "description": "매일 자정, 도시는 시민 한 명의 기억을 세금으로 걷는다."
+      },
+      {
+        "id": "player",
+        "kind": "Character",
+        "name": "기억 수선사",
+        "description": "훼손된 기억에 들어가 진실을 복원한다."
+      },
+      {
+        "id": "echo",
+        "kind": "Character",
+        "name": "에코",
+        "description": "도시 전체에서 삭제된 기억으로 만들어진 동료."
+      },
+      {
+        "id": "memory-tax",
+        "kind": "WorldRule",
+        "name": "기억세",
+        "description": "도시는 매일 자정 시민 한 명의 기억을 세금으로 걷는다."
+      },
+      {
+        "id": "memory-loop",
+        "kind": "GameLoop",
+        "name": "잠입 → 수선 → 선택",
+        "description": "단서를 얻고 기억에 잠입해 조각을 복원한 뒤 진실을 선택한다."
+      }
+    ],
+    "edges": [
+      {
+        "id": "repairs",
+        "source": "player",
+        "target": "world",
+        "type": "REPAIRS_MEMORY_IN"
+      },
+      {
+        "id": "echo-remembers",
+        "source": "echo",
+        "target": "world",
+        "type": "REMEMBERS_FOR"
+      }
+    ]
+  },
+  "story": [
+    {
+      "id": "beat-missing-name",
+      "kind": "StoryBeat",
+      "act": "ACT 1",
+      "title": "사라진 이름",
+      "body": "첫 의뢰인의 기억에서 지도에 없는 구역을 발견한다.",
+      "choices": [
+        {
+          "id": "choice-follow-echo",
+          "label": "에코를 믿고 금지 구역으로 간다",
+          "targetId": "ending-memory-free",
+          "conditions": [
+            { "variable": "echoTrust", "operator": "equals", "value": true }
+          ],
+          "effects": [
+            { "variable": "clueCount", "operation": "increment", "value": 1 }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ending-memory-free",
+      "kind": "Ending",
+      "act": "ACT 3",
+      "title": "해방된 기억",
+      "body": "도시는 기억세를 멈추고 시민들은 잃어버린 이름을 되찾는다.",
+      "choices": []
+    }
+  ],
+  "unity": {
+    "version": "Unity 6 LTS",
+    "renderPipeline": "URP",
+    "scenes": ["Boot", "MemoryHub", "EchoDistrict", "FinalChoice"]
+  }
+}

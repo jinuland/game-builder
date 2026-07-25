@@ -1,0 +1,13 @@
+version: 0.2
+
+phases:
+  pre_build:
+    commands:
+      - ACCOUNT_REGISTRY="${ECR_REPOSITORY_URI%%/*}"
+      - aws ecr get-login-password | docker login --username AWS --password-stdin "$ACCOUNT_REGISTRY"
+  build:
+    commands:
+      - docker build --platform linux/amd64 -f Dockerfile.aws -t "$ECR_REPOSITORY_URI:$IMAGE_TAG" .
+  post_build:
+    commands:
+      - docker push "$ECR_REPOSITORY_URI:$IMAGE_TAG"
