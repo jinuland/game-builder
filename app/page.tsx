@@ -107,7 +107,11 @@ export default function Home() {
     const id = window.setInterval(() => setGame((current) => stepAgents(current)), 900);
     return () => window.clearInterval(id);
   }, [started]);
-  useEffect(() => { if (started) window.localStorage.setItem(SAVE_KEY, JSON.stringify(game)); }, [game, started]);
+  useEffect(() => {
+    if (!started) return;
+    const id = window.setTimeout(() => window.localStorage.setItem(SAVE_KEY, JSON.stringify(game)), 1200);
+    return () => window.clearTimeout(id);
+  }, [game, started]);
   const dispatch = useCallback((action: WorldAction) => setGame((current) => runAction(current, "player", action)), []);
   const syncPlayerPosition = useCallback((x: number, y: number) => setGame((current) => {
     if (current.player.x === x && current.player.y === y) return current;

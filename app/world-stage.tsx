@@ -65,6 +65,11 @@ function PlayerController({
   const speed = useRef(0);
   const activeAnimation = useRef<THREE.AnimationAction | null>(null);
   const lastTile = useRef({ x: game.player.x, y: game.player.y });
+  const initialPosition = useRef<[number, number, number]>([
+    game.player.x - WORLD_CENTER,
+    .04,
+    game.player.y - WORLD_CENTER,
+  ]);
   const targetDirection = useMemo(() => new THREE.Vector3(), []);
   const velocity = useMemo(() => new THREE.Vector3(), []);
   const cameraShift = useMemo(() => new THREE.Vector3(), []);
@@ -164,7 +169,7 @@ function PlayerController({
     playAnimation(speed.current > .18 ? "run" : "idle");
   });
 
-  return <group ref={root} position={[game.player.x - WORLD_CENTER, .04, game.player.y - WORLD_CENTER]}>
+  return <group ref={root} position={initialPosition.current}>
     <group ref={modelRoot} scale={.58}><primitive object={scene} /></group>
     <Html position={[0, 1.75, 0]} center distanceFactor={10}><div className="worldName playerName">{game.player.name}<small>{heroClass}</small></div></Html>
   </group>;
@@ -198,7 +203,7 @@ function Crystal({ x, z, memory }: { x: number; z: number; memory: boolean }) {
 function TileMesh({ tile, x, z, seed, resource }: { tile: Tile; x: number; z: number; seed: number; resource: boolean }) {
   const colors = { moss: "#173d31", meadow: "#28523e", water: "#143e54", ruins: "#39433f", ember: "#56362d" } as const;
   const height = tile.kind === "water" ? -.13 : Math.sin(seed * 17) * .035;
-  const nature = seed > .62 && (tile.kind === "moss" || tile.kind === "meadow");
+  const nature = seed > .72 && (tile.kind === "moss" || tile.kind === "meadow");
   return <group>
     <mesh receiveShadow position={[x, height - .12, z]}>
       <boxGeometry args={[.98, tile.kind === "water" ? .12 : .24, .98]} />
@@ -224,23 +229,31 @@ function MistBeast({ position, color }: { position: [number, number, number]; co
 function Scene({ game, heroClass, onPositionChange }: { game: GameState; heroClass: HeroClass; onPositionChange: (x: number, y: number) => void }) {
   const radius = 8;
   const controlsRef = useRef<OrbitControlsImpl>(null);
-  const tiles = [];
-  for (let y = Math.max(0, game.player.y - radius); y <= Math.min(31, game.player.y + radius); y += 1) {
-    for (let x = Math.max(0, game.player.x - radius); x <= Math.min(31, game.player.x + radius); x += 1) {
-      const tile = game.tiles[y][x];
-      const localX = x - WORLD_CENTER;
-      const localZ = y - WORLD_CENTER;
-      const seed = ((x * 92821 + y * 68917 + game.seed) % 1000) / 1000;
-      const key = `${x}:${y}`;
-      tiles.push(<TileMesh key={key} tile={tile} x={localX} z={localZ} seed={seed} resource={!game.collected.includes(key)} />);
+  const initialTarget = useRef<[number, number, number]>([
+    game.player.x - WORLD_CENTER,
+    0,
+    game.player.y - WORLD_CENTER,
+  ]);
+  const tiles = useMemo(() => {
+    const visibleTiles = [];
+    for (let y = Math.max(0, game.player.y - radius); y <= Math.min(31, game.player.y + radius); y += 1) {
+      for (let x = Math.max(0, game.player.x - radius); x <= Math.min(31, game.player.x + radius); x += 1) {
+        const tile = game.tiles[y][x];
+        const localX = x - WORLD_CENTER;
+        const localZ = y - WORLD_CENTER;
+        const seed = ((x * 92821 + y * 68917 + game.seed) % 1000) / 1000;
+        const key = `${x}:${y}`;
+        visibleTiles.push(<TileMesh key={key} tile={tile} x={localX} z={localZ} seed={seed} resource={!game.collected.includes(key)} />);
+      }
     }
-  }
+    return visibleTiles;
+  }, [game.collected, game.player.x, game.player.y, game.seed, game.tiles]);
   return <>
     <color attach="background" args={["#0a211c"]} />
     <fog attach="fog" args={["#0a211c", 9, 21]} />
     <ambientLight intensity={.9} color="#a5cfc0" />
     <hemisphereLight args={["#b9e8d7", "#07100d", 1.8]} />
-    <directionalLight castShadow position={[-5, 9, 6]} intensity={4.2} color="#e3fff4" shadow-mapSize={[2048, 2048]} shadow-camera-left={-10} shadow-camera-right={10} shadow-camera-top={10} shadow-camera-bottom={-10} />
+    <directionalLight castShadow position={[-5, 9, 6]} intensity={4.2} color="#e3fff4" shadow-mapSize={[1024, 1024]} shadow-camera-left={-10} shadow-camera-right={10} shadow-camera-top={10} shadow-camera-bottom={-10} />
     <pointLight position={[2, 3, 2]} intensity={5} distance={8} color="#72d6be" />
     {tiles}
     <Suspense fallback={null}>
@@ -254,15 +267,15 @@ function Scene({ game, heroClass, onPositionChange }: { game: GameState; heroCla
     </Suspense>
     {game.monsters.map((monster) => monster.hp > 0 && Math.abs(monster.x - game.player.x) <= radius && Math.abs(monster.y - game.player.y) <= radius
       ? <MistBeast key={monster.id} position={[monster.x - WORLD_CENTER, .28, monster.y - WORLD_CENTER]} color="#b75043" /> : null)}
-    <ContactShadows position={[game.player.x - WORLD_CENTER, .02, game.player.y - WORLD_CENTER]} scale={18} opacity={.38} blur={2.4} far={4} color="#000805" />
-    <Sparkles count={70} scale={[15, 3, 15]} position={[game.player.x - WORLD_CENTER, 1.2, game.player.y - WORLD_CENTER]} size={1.4} speed={.16} opacity={.25} color="#7fe6c2" />
-    <OrbitControls ref={controlsRef} makeDefault enablePan={false} minDistance={8} maxDistance={15} minPolarAngle={.55} maxPolarAngle={1.15} target={[game.player.x - WORLD_CENTER, 0, game.player.y - WORLD_CENTER]} />
+    <ContactShadows position={[0, .02, 0]} scale={25} opacity={.28} blur={2.4} far={4} frames={1} color="#000805" />
+    <Sparkles count={44} scale={[15, 3, 15]} position={[game.player.x - WORLD_CENTER, 1.2, game.player.y - WORLD_CENTER]} size={1.4} speed={.16} opacity={.25} color="#7fe6c2" />
+    <OrbitControls ref={controlsRef} makeDefault enablePan={false} minDistance={8} maxDistance={15} minPolarAngle={.55} maxPolarAngle={1.15} target={initialTarget.current} />
   </>;
 }
 
 export default function WorldStage({ game, heroClass, onPositionChange }: { game: GameState; heroClass: HeroClass; onPositionChange: (x: number, y: number) => void }) {
   return <div className="world3d" aria-label="실시간 3D 플레이 월드">
-    <Canvas shadows="basic" dpr={[1, 1.7]} camera={{ position: [8.2, 8.6, 9.4], fov: 42 }} gl={{ antialias: true, toneMapping: THREE.ACESFilmicToneMapping }}>
+    <Canvas shadows="basic" dpr={[1, 1.35]} camera={{ position: [8.2, 8.6, 9.4], fov: 42 }} gl={{ antialias: true, powerPreference: "high-performance", toneMapping: THREE.ACESFilmicToneMapping }}>
       <Scene game={game} heroClass={heroClass} onPositionChange={onPositionChange} />
     </Canvas>
     <div className="world3dBadge"><i /> LIVE 3D WORLD <span>HOLD WASD · DRAG TO ORBIT</span></div>
