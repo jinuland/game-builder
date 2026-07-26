@@ -7,6 +7,7 @@ import type { HeroClass } from "./character-stage";
 
 const SAVE_KEY = "worldloom:save:v1";
 const CharacterStage = dynamic(() => import("./character-stage"), { ssr: false });
+const WorldStage = dynamic(() => import("./world-stage"), { ssr: false });
 const heroClasses: Array<{ id: HeroClass; role: string; blurb: string; stats: number[] }> = [
   { id: "Knight", role: "VANGUARD", blurb: "방패로 경계를 세우는 서약의 수호자", stats: [15, 10, 14, 8, 11, 10] },
   { id: "Barbarian", role: "RAIDER", blurb: "분노를 힘으로 바꾸는 야생의 전사", stats: [17, 11, 15, 7, 9, 8] },
@@ -175,8 +176,8 @@ export default function Home() {
   const currentTile = game.tiles[game.player.y]?.[game.player.x];
   return <main className="gameShell">
     <header className="topbar"><div className="wordmark"><span className="brandMark">W</span><b>WORLDLOOM</b></div><div className="location"><small>현재 구역</small><strong>{describeTile(currentTile)}</strong><code>{game.player.x.toString().padStart(2, "0")} : {game.player.y.toString().padStart(2, "0")}</code></div><div className="online"><i /> WORLD TICK {game.tick}</div><button className="quiet" onClick={() => setStarted(false)}>나가기</button></header>
-    <section className="playArea"><WorldCanvas game={game} dispatch={dispatch} /><div className="hud">
-      <div className="playerCard"><div className="avatar">旅</div><div><small>WANDERER</small><strong>{game.player.name}</strong></div><Stat label="HP" value={game.player.hp} max={12} /><Stat label="기력" value={game.player.energy} max={10} /></div>
+    <section className="playArea"><WorldStage game={game} heroClass={heroClass} dispatch={dispatch} /><div className="hud">
+      <div className="playerCard"><div className="avatar">{heroClass === "Knight" ? "♜" : heroClass === "Barbarian" ? "✕" : heroClass === "Rogue" ? "◒" : "✦"}</div><div><small>{heroClass.toUpperCase()}</small><strong>{game.player.name}</strong></div><Stat label="HP" value={game.player.hp} max={18} /><Stat label="기력" value={game.player.energy} max={10} /></div>
       <div className="objective"><small>ACTIVE THREAD</small><strong>잃어버린 기억의 조각</strong><p>안개 정원을 탐색해 기억 파편을 모으세요.</p><div className="questProgress"><i style={{ width: `${Math.min(100, game.memory / 3 * 100)}%` }} /></div><span>{Math.min(game.memory, 3)} / 3</span></div>
       <div className="controls"><span><kbd>WASD</kbd> 이동</span><span><kbd>E</kbd> 상호작용</span><span><kbd>CLICK</kbd> 이동</span></div>
     </div></section>

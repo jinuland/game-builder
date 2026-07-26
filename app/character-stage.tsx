@@ -61,7 +61,7 @@ function Pedestal() {
 
 export default function CharacterStage({ heroClass }: { heroClass: HeroClass }) {
   return <div className="characterStage" aria-label={`${heroClass} 3D 캐릭터 미리보기`}>
-    <Canvas shadows dpr={[1, 2]} camera={{ position: [0, .42, 5.65], fov: 35 }} gl={{ antialias: true, alpha: true, toneMapping: THREE.ACESFilmicToneMapping }}>
+    <Canvas shadows="basic" dpr={[1, 2]} camera={{ position: [0, .42, 5.65], fov: 35 }} gl={{ antialias: true, alpha: true, toneMapping: THREE.ACESFilmicToneMapping }}>
       <fog attach="fog" args={["#050912", 5.2, 9]} />
       <ambientLight intensity={.75} color="#8bb7d9" />
       <hemisphereLight args={["#a9d9ff", "#02040a", 1.15]} />

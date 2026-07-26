@@ -68,6 +68,15 @@ h1 em { color:var(--gold); font-style:normal; }
 .quiet { background:none; border:1px solid var(--line); padding:8px 12px; font-size:11px; }
 .playArea { position:relative; min-width:0; overflow:hidden; }
 .world { width:100%; height:100%; display:block; cursor:crosshair; }
+.world3d { position:absolute; inset:0; background:#071411; }
+.world3d canvas { display:block; cursor:grab; }
+.world3d canvas:active { cursor:grabbing; }
+.world3dBadge { position:absolute; right:20px; top:18px; padding:8px 11px; border:1px solid rgba(107,214,179,.18); background:rgba(4,14,11,.72); color:#a8c5ba; font:7px "IBM Plex Mono"; letter-spacing:.1em; backdrop-filter:blur(9px); }
+.world3dBadge i { display:inline-block; width:6px; height:6px; margin-right:7px; border-radius:50%; background:#61dfa7; box-shadow:0 0 9px #61dfa7; }
+.world3dBadge span { color:#4e6a60; margin-left:9px; }
+.worldName { pointer-events:none; white-space:nowrap; padding:4px 7px; border:1px solid rgba(131,226,192,.18); background:rgba(3,14,11,.76); color:#cce8de; text-align:center; font:700 8px Manrope; box-shadow:0 5px 14px rgba(0,0,0,.28); }
+.worldName small { display:block; margin-top:2px; color:#5a8a79; font:6px "IBM Plex Mono"; letter-spacing:.11em; }
+.worldName.playerName { border-color:rgba(229,197,101,.45); color:#fff0b9; }
 .hud { position:absolute; inset:0; pointer-events:none; padding:22px; display:flex; flex-direction:column; }
 .playerCard { width:245px; padding:14px; display:grid; grid-template-columns:42px 1fr; gap:5px 12px; background:#09130fe8; border:1px solid var(--line); backdrop-filter:blur(8px); }
 .avatar { grid-row:1/3; width:42px; height:42px; display:grid; place-items:center; background:#23392f; color:var(--gold); font:18px "Gowun Batang"; border:1px solid #52694f; }
