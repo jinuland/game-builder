@@ -22,13 +22,13 @@ export const metadata: Metadata = {
   openGraph: {
     title: "WORLDLOOM",
     description: "Every mind plays by the same rules.",
-    images: [{ url: "/worldloom-key-art.png", width: 1672, height: 941 }],
+    images: [{ url: "/og-character.png", width: 1672, height: 941 }],
   },
   twitter: {
     card: "summary_large_image",
     title: "WORLDLOOM",
     description: "Every mind plays by the same rules.",
-    images: ["/worldloom-key-art.png"],
+    images: ["/og-character.png"],
   },
   icons: {
     icon: "/favicon.svg",

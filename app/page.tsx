@@ -1,9 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { createWorld, describeTile, runAction, stepAgents, type GameState, type WorldAction } from "@/lib/web-game";
+import type { HeroClass } from "./character-stage";
 
 const SAVE_KEY = "worldloom:save:v1";
+const CharacterStage = dynamic(() => import("./character-stage"), { ssr: false });
+const heroClasses: Array<{ id: HeroClass; role: string; blurb: string; stats: number[] }> = [
+  { id: "Knight", role: "VANGUARD", blurb: "방패로 경계를 세우는 서약의 수호자", stats: [15, 10, 14, 8, 11, 10] },
+  { id: "Barbarian", role: "RAIDER", blurb: "분노를 힘으로 바꾸는 야생의 전사", stats: [17, 11, 15, 7, 9, 8] },
+  { id: "Rogue", role: "SHADOW", blurb: "한 번의 빈틈으로 전장을 끝내는 추적자", stats: [10, 17, 11, 12, 10, 13] },
+  { id: "Arcanist", role: "WEAVER", blurb: "기억의 실을 주문으로 엮는 비전술사", stats: [8, 11, 10, 17, 15, 12] },
+];
 
 function Stat({ label, value, max }: { label: string; value: number; max: number }) {
   return <div className="stat"><span>{label}</span><div className="meter"><i style={{ width: `${Math.max(0, Math.min(100, value / max * 100))}%` }} /></div><strong>{value}</strong></div>;
@@ -80,6 +89,10 @@ function WorldCanvas({ game, dispatch }: { game: GameState; dispatch: (action: W
 export default function Home() {
   const [game, setGame] = useState<GameState>(() => createWorld(4931));
   const [started, setStarted] = useState(false);
+  const [heroClass, setHeroClass] = useState<HeroClass>("Knight");
+  const [heroName, setHeroName] = useState("");
+  const [statShift, setStatShift] = useState(0);
+  const [nameError, setNameError] = useState(false);
   const [panel, setPanel] = useState<"journal" | "people" | "protocol">("journal");
   useEffect(() => {
     const saved = window.localStorage.getItem(SAVE_KEY);
@@ -110,18 +123,54 @@ export default function Home() {
     return () => window.removeEventListener("keydown", onKey);
   }, [dispatch, started]);
 
-  if (!started) return <main className="landing">
-    <nav><span className="brandMark">W</span><b>WORLDLOOM</b><small>WEB WORLD WORKSHOP</small></nav>
-    <section className="hero">
-      <p className="eyebrow">A WORLD WHERE EVERY MIND PLAYS BY THE SAME RULES</p>
-      <h1>세계는 기다리지 않는다.<br /><em>당신이 들어오면, 반응한다.</em></h1>
-      <p className="lede">설치도 엔진도 없습니다. 사람과 AI 주민이 같은 행동 프로토콜로 살아가는 브라우저 세계를 지금 시작하세요.</p>
-      <div className="heroActions"><button className="primary" onClick={() => setStarted(true)}>세계에 입장하기 <span>→</span></button><button onClick={() => { window.localStorage.removeItem(SAVE_KEY); setGame(createWorld(Date.now())); setStarted(true); }}>새 시드로 시작</button></div>
-      <div className="featureStrip"><span><i>01</i> BROWSER NATIVE</span><span><i>02</i> SHARED ACTIONS</span><span><i>03</i> LIVING AGENTS</span><span><i>04</i> LOCAL SAVE</span></div>
-    </section>
-    <aside className="worldPreview"><div className="orbit orbitOne" /><div className="orbit orbitTwo" /><div className="previewCore"><span>49,31</span><b>안개 정원</b><small>WORLD SEED ONLINE</small></div><div className="signal signalOne">AI 주민 3</div><div className="signal signalTwo">기억 파편 12</div><div className="signal signalThree">미확인 생명체</div></aside>
-    <footer>Original web game prototype · inspired by open-world agent parity</footer>
-  </main>;
+  if (!started) {
+    const selected = heroClasses.find((item) => item.id === heroClass) ?? heroClasses[0];
+    const stats = selected.stats.map((value, index) => Math.max(6, value + ((statShift + index * 2) % 3) - 1));
+    const createCharacter = () => {
+      const name = heroName.trim();
+      if (name.length < 2) { setNameError(true); return; }
+      setGame((current) => ({ ...current, player: { ...current.player, name, hp: Math.min(18, 8 + stats[2]) } }));
+      setStarted(true);
+    };
+    return <main className="creator">
+      <header className="creatorHeader">
+        <div className="creatorBrand"><span className="brandMark">W</span><div><b>WORLDLOOM</b><small>REALM 01 · THE MIST GARDEN</small></div></div>
+        <div className="creatorTitle"><small>ORIGIN SEQUENCE</small><h1>운명을 선택하세요</h1><p>새로운 존재가 세계의 기억에 기록됩니다.</p></div>
+        <div className="accountChip"><i /><div><small>WANDERER ID</small><strong>player_{game.seed.toString(16).slice(-6)}</strong></div></div>
+      </header>
+
+      <section className="classRail">
+        <div className="railLabel"><small>01</small><span>CLASS ARCHETYPE</span></div>
+        {heroClasses.map((item) => <button key={item.id} className={heroClass === item.id ? "selected" : ""} onClick={() => setHeroClass(item.id)}>
+          <span className="classSigil">{item.id === "Knight" ? "♜" : item.id === "Barbarian" ? "✕" : item.id === "Rogue" ? "◒" : "✦"}</span>
+          <span><small>{item.role}</small><strong>{item.id}</strong></span>
+          <i>→</i>
+        </button>)}
+        <div className="classLore"><small>ARCHETYPE NOTE</small><p>{selected.blurb}</p></div>
+      </section>
+
+      <section className="stageWrap">
+        <div className="stageRunes">ᚷ&nbsp;&nbsp;ᛉ&nbsp;&nbsp;ᚱ</div>
+        <CharacterStage heroClass={heroClass} />
+        <div className="modelBadge"><span>LIVE</span><strong>REAL-TIME 3D</strong><small>PBR · SKINNED MESH · IDLE MOTION</small></div>
+      </section>
+
+      <section className="buildPanel">
+        <div className="identityBlock">
+          <label htmlFor="hero-name"><span>02</span> CHARACTER NAME</label>
+          <div className={`nameField ${nameError ? "error" : ""}`}><input id="hero-name" value={heroName} maxLength={18} placeholder="이름을 입력하세요" onChange={(event) => { setHeroName(event.target.value); setNameError(false); }} onKeyDown={(event) => { if (event.key === "Enter") createCharacter(); }} /><small>{heroName.length}/18</small></div>
+          {nameError && <p className="fieldError">두 글자 이상의 이름이 필요합니다.</p>}
+        </div>
+        <div className="statsBlock">
+          <div className="statsHead"><label><span>03</span> CORE ATTRIBUTES</label><button onClick={() => setStatShift((value) => value + 1)}>↻ REROLL</button></div>
+          <div className="statHex">{["STR", "DEX", "CON", "INT", "WIS", "CHA"].map((label, index) => <div key={label}><small>{label}</small><strong>{stats[index]}</strong><i style={{ height: `${stats[index] * 4}%` }} /></div>)}</div>
+        </div>
+        <div className="creationSummary"><div><small>STARTING PATH</small><strong>{selected.role} · LEVEL 1</strong></div><div><small>SPAWN</small><strong>MIST GARDEN / NORTH GATE</strong></div></div>
+        <button className="createHero" onClick={createCharacter}><span>캐릭터 생성</span><i>ENTER WORLD&nbsp;&nbsp;→</i></button>
+      </section>
+      <footer className="creatorFooter"><span>© WORLDLOOM PROTOCOL</span><span>KayKit CC0 character assets · WebGL renderer</span><span className="online"><i /> WORLD SERVICE ONLINE</span></footer>
+    </main>;
+  }
 
   const currentTile = game.tiles[game.player.y]?.[game.player.x];
   return <main className="gameShell">

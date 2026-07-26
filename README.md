@@ -34,6 +34,8 @@ Bedrock이나 향후 Grok 이미지 공급자 호출은 서버 Route Handler에�
 
 ## 현재 범위
 
+- WebGL 기반 실시간 3D 캐릭터 생성기
+- 클래스별 스키닝 모델, PBR 조명, 그림자, Idle 애니메이션, 회전 및 확대
 - 결정적 32×32 절차 생성 세계
 - Canvas 기반 브라우저 렌더링
 - 플레이어와 AI 주민이 공유하는 `WorldAction` 프로토콜
@@ -42,3 +44,10 @@ Bedrock이나 향후 Grok 이미지 공급자 호출은 서버 Route Handler에�
 
 다음 단계는 서버 권위 월드, WebSocket 멀티플레이, 계정별 영속 저장, 서버 측 AI 의사결정
 및 Grok 기반 이미지 파이프라인입니다.
+
+## 3D 자산
+
+캐릭터 모델과 애니메이션은 Kay Lousberg의
+[KayKit Adventurers Character Pack](https://github.com/KayKit-Game-Assets/KayKit-Character-Pack-Adventures-1.0)을
+사용합니다. 저장소에 동봉한 `public/models/kaykit/LICENSE.txt`에 따라 CC0로 제공되며
+개인·교육·상업 프로젝트에서 사용할 수 있습니다.
