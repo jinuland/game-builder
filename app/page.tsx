@@ -98,6 +98,8 @@ export default function Home() {
   useEffect(() => {
     const saved = window.localStorage.getItem(SAVE_KEY);
     if (!saved) return;
+    // Restore the external browser save once after hydration.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     try { setGame(JSON.parse(saved) as GameState); } catch { window.localStorage.removeItem(SAVE_KEY); }
   }, []);
   useEffect(() => {
@@ -107,14 +109,14 @@ export default function Home() {
   }, [started]);
   useEffect(() => { if (started) window.localStorage.setItem(SAVE_KEY, JSON.stringify(game)); }, [game, started]);
   const dispatch = useCallback((action: WorldAction) => setGame((current) => runAction(current, "player", action)), []);
+  const syncPlayerPosition = useCallback((x: number, y: number) => setGame((current) => {
+    if (current.player.x === x && current.player.y === y) return current;
+    return { ...current, tick: current.tick + 1, player: { ...current.player, x, y } };
+  }), []);
   useEffect(() => {
     if (!started) return;
     const onKey = (event: KeyboardEvent) => {
       const actions: Record<string, WorldAction> = {
-        ArrowUp: { type: "move", dx: 0, dy: -1 }, w: { type: "move", dx: 0, dy: -1 },
-        ArrowDown: { type: "move", dx: 0, dy: 1 }, s: { type: "move", dx: 0, dy: 1 },
-        ArrowLeft: { type: "move", dx: -1, dy: 0 }, a: { type: "move", dx: -1, dy: 0 },
-        ArrowRight: { type: "move", dx: 1, dy: 0 }, d: { type: "move", dx: 1, dy: 0 },
         e: { type: "interact" }, " ": { type: "interact" },
       };
       const action = actions[event.key];
@@ -176,10 +178,10 @@ export default function Home() {
   const currentTile = game.tiles[game.player.y]?.[game.player.x];
   return <main className="gameShell">
     <header className="topbar"><div className="wordmark"><span className="brandMark">W</span><b>WORLDLOOM</b></div><div className="location"><small>현재 구역</small><strong>{describeTile(currentTile)}</strong><code>{game.player.x.toString().padStart(2, "0")} : {game.player.y.toString().padStart(2, "0")}</code></div><div className="online"><i /> WORLD TICK {game.tick}</div><button className="quiet" onClick={() => setStarted(false)}>나가기</button></header>
-    <section className="playArea"><WorldStage game={game} heroClass={heroClass} dispatch={dispatch} /><div className="hud">
+    <section className="playArea"><WorldStage game={game} heroClass={heroClass} onPositionChange={syncPlayerPosition} /><div className="hud">
       <div className="playerCard"><div className="avatar">{heroClass === "Knight" ? "♜" : heroClass === "Barbarian" ? "✕" : heroClass === "Rogue" ? "◒" : "✦"}</div><div><small>{heroClass.toUpperCase()}</small><strong>{game.player.name}</strong></div><Stat label="HP" value={game.player.hp} max={18} /><Stat label="기력" value={game.player.energy} max={10} /></div>
       <div className="objective"><small>ACTIVE THREAD</small><strong>잃어버린 기억의 조각</strong><p>안개 정원을 탐색해 기억 파편을 모으세요.</p><div className="questProgress"><i style={{ width: `${Math.min(100, game.memory / 3 * 100)}%` }} /></div><span>{Math.min(game.memory, 3)} / 3</span></div>
-      <div className="controls"><span><kbd>WASD</kbd> 이동</span><span><kbd>E</kbd> 상호작용</span><span><kbd>CLICK</kbd> 이동</span></div>
+      <div className="controls"><span><kbd>WASD</kbd> 누르고 이동</span><span><kbd>E</kbd> 상호작용</span><span><kbd>DRAG</kbd> 시점 회전</span></div>
     </div></section>
     <aside className="sidePanel"><div className="tabs">{(["journal", "people", "protocol"] as const).map((item) => <button key={item} className={panel === item ? "active" : ""} onClick={() => setPanel(item)}>{item === "journal" ? "기록" : item === "people" ? "주민" : "규칙"}</button>)}</div>
       {panel === "journal" && <div className="log"><h2>세계 기록</h2>{game.log.slice(-8).reverse().map((entry, index) => <p key={`${entry}-${index}`}><time>{String(game.tick - index).padStart(3, "0")}</time>{entry}</p>)}</div>}
