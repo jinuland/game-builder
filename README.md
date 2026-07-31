@@ -1,44 +1,20 @@
-# WORLDLOOM
+# GAME FORGE
 
-Unity 빌드 중심의 기존 GAME FORGE를 보존하고 별도 저장소에서 시작한 브라우저 네이티브 게임 프로토타입입니다.
+사용자의 게임 아이디어를 장르별 재미 공식에 매핑하고, 편집 가능한 스토리·온톨로지·게임 기획안과 코딩 에이전트용 Build Goal을 생성하는 로컬 워크숍입니다.
 
-## 플레이
+## 실행
 
 ```bash
 npm install
+cp .env.example .env.local
 npm run dev
 ```
 
-- WASD / 방향키: 이동
-- E / Space: 채집, 대화, 휴식
-- 마우스 클릭 또는 모바일 버튼 지원
-- 플레이 상태는 브라우저 `localStorage`에 자동 저장
+브라우저에서 `http://localhost:3000/ontology-builder`를 엽니다.
 
-## 독립 구현과 라이선스
+## Bedrock 설정
 
-[Julian-adv/OpenMMO](https://github.com/Julian-adv/OpenMMO)의 공개 설명에서
-“사람과 AI 에이전트가 같은 세계 규칙과 프로토콜을 사용한다”는 제품 아이디어와
-클라이언트/권위 서버 분리 방향을 참고했습니다.
-
-OpenMMO의 소스 코드, 데이터, 이미지, 음악, 3D 모델 또는 문서를 복사하지 않았습니다.
-현재 게임 루프, 절차 생성, Canvas 렌더러, 상태 모델과 UI는 이 저장소에서 새로 작성한
-독립 구현입니다. 향후 OpenMMO 코드를 직접 도입할 경우에는 먼저 해당 저장소의
-PolyForm Noncommercial 1.0.0 조건(특히 상업적 이용 제한과 고지 의무)을 검토하고
-파생 코드와 라이선스 고지를 분명히 분리해야 합니다.
-
-## 키 관리
-
-원본의 개발 키 설정은 Git에서 제외되는 `.env.local`로만 복사했습니다. 비밀값은
-클라이언트 코드, `NEXT_PUBLIC_*`, HTML, 브라우저 저장소에 노출하지 않습니다.
-Bedrock이나 향후 Grok 이미지 공급자 호출은 서버 Route Handler에서만 실행해야 합니다.
-
-로컬에서 GAME FORGE의 Bedrock 생성 기능을 사용하려면:
-
-```bash
-cp .env.example .env.local
-```
-
-그다음 `.env.local`에 자신의 값을 설정합니다.
+`.env.local`에 자신의 Bedrock API key를 입력합니다.
 
 ```dotenv
 AWS_BEARER_TOKEN_BEDROCK=your-own-bedrock-api-key
@@ -46,27 +22,22 @@ GAMEFORGE_BEDROCK_REGION=ap-northeast-2
 GAMEFORGE_BEDROCK_MODEL_ID=us.anthropic.claude-sonnet-4-6
 ```
 
-`.env.local`은 `.gitignore`에 포함되어 있으므로 커밋하지 않습니다. 운영 AWS에서는
-가능하면 장기 키 대신 실행 역할(IAM role)과 비밀 저장소를 사용하세요.
+`.env.local`은 Git에서 제외됩니다. 비밀값을 `NEXT_PUBLIC_*`, 클라이언트 코드, HTML 또는 브라우저 저장소에 넣지 마세요. 운영 AWS에서는 가능하면 장기 키 대신 IAM 실행 역할과 비밀 저장소를 사용하세요.
 
-## 현재 범위
+## 주요 기능
 
-- WebGL 기반 실시간 3D 캐릭터 생성기
-- 클래스별 스키닝 모델, PBR 조명, 그림자, Idle 애니메이션, 회전 및 확대
-- 결정적 32×32 절차 생성 세계
-- WebGL 기반 3D 월드 렌더링과 궤도 카메라
-- 절차 생성 지형, 물, 숲, 폐허, 발광 자원과 실시간 그림자
-- 생성한 3D 캐릭터 및 AI 주민 모델이 플레이 월드에 그대로 연결
-- 플레이어와 AI 주민이 공유하는 `WorldAction` 프로토콜
-- 이동, 충돌, 기력, 채집, 대화, 전투, 퀘스트 진행
-- 모바일 조작과 로컬 자동 저장
+- 대표 장르 선택과 게임 아이디어 확장
+- 3·5·7막 스토리보드 생성 및 직접 편집
+- 게임 온톨로지 노드·관계 편집과 그래프 보기
+- 캐릭터·배경·게임 방식·조작·성장 구조를 포함한 기획안 검토
+- 사용자 피드백을 반영한 기획안 재생성
+- Bedrock 기반 Build Goal 생성
+- 이미지 제작, 밸런스, 플레이테스트, 완료 계약을 포함한 실행 명세
+- 프로젝트별 브라우저 저장과 JSON·Markdown 내보내기
 
-다음 단계는 서버 권위 월드, WebSocket 멀티플레이, 계정별 영속 저장, 서버 측 AI 의사결정
-및 Grok 기반 이미지 파이프라인입니다.
+## 검증
 
-## 3D 자산
-
-캐릭터 모델과 애니메이션은 Kay Lousberg의
-[KayKit Adventurers Character Pack](https://github.com/KayKit-Game-Assets/KayKit-Character-Pack-Adventures-1.0)을
-사용합니다. 저장소에 동봉한 `public/models/kaykit/LICENSE.txt`에 따라 CC0로 제공되며
-개인·교육·상업 프로젝트에서 사용할 수 있습니다.
+```bash
+npm run build:aws
+npm run lint
+```

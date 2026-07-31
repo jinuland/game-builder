@@ -30,9 +30,9 @@ type GoalPackage = {
   gameGoal: string; implementationPrompt: string; goals: ImplementationGoal[];
 };
 
-const SAVE_KEY = "worldloom:genre-workshop:v2";
-const PROJECTS_KEY = "worldloom:game-projects:v1";
-const ACTIVE_PROJECT_KEY = "worldloom:active-project:v1";
+const SAVE_KEY = "gameforge:genre-workshop:v2";
+const PROJECTS_KEY = "gameforge:game-projects:v1";
+const ACTIVE_PROJECT_KEY = "gameforge:active-project:v1";
 const GENERATION_TIMEOUT_MS = 15 * 60 * 1_000;
 type SavedProject = { id: string; name: string; genreId: string; idea: string; actCount: number; story: StoryDesign | null; concept: GameConcept | null; feedback: string; goals: GoalPackage | null; updatedAt: string };
 
@@ -84,6 +84,20 @@ export default function OntologyBuilder() {
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
       try {
+        // Preserve projects created by earlier local builds without retaining
+        // their retired product namespace.
+        for (let index = 0; index < localStorage.length; index += 1) {
+          const key = localStorage.key(index);
+          if (!key) continue;
+          const target = key.endsWith(":game-projects:v1") ? PROJECTS_KEY
+            : key.endsWith(":active-project:v1") ? ACTIVE_PROJECT_KEY
+            : key.endsWith(":genre-workshop:v2") ? SAVE_KEY
+            : null;
+          if (target && key !== target && !localStorage.getItem(target)) {
+            const value = localStorage.getItem(key);
+            if (value !== null) localStorage.setItem(target, value);
+          }
+        }
         let savedProjects = JSON.parse(localStorage.getItem(PROJECTS_KEY) ?? "[]") as SavedProject[];
         const legacy = JSON.parse(localStorage.getItem(SAVE_KEY) ?? "null") as { genreId?: string; idea?: string; actCount?: number; story?: StoryDesign; goals?: GoalPackage } | null;
         if (!savedProjects.length && legacy) {
@@ -178,7 +192,7 @@ export default function OntologyBuilder() {
 
   return <main className={styles.shell}>
     <header className={styles.header}>
-      <Link href="/">← WORLDLOOM</Link><h1>GAME FORGE</h1><p>{hydrated ? "자동 저장 ON · " : ""}GENRE → STORY ONTOLOGY → BUILD GOALS</p>
+      <Link href="/">← GAME FORGE</Link><h1>GAME FORGE</h1><p>{hydrated ? "자동 저장 ON · " : ""}GENRE → STORY ONTOLOGY → BUILD GOALS</p>
     </header>
     <div className={styles.steps}><b>1 장르</b><i>→</i><b>2 아이디어</b><i>→</i><b>3 스토리 편집</b><i>→</i><b>4 기획안 검토</b><i>→</i><b>5 Goal 생성</b><i>→</i><b>6 게임 구현</b></div>
     <section className={styles.projectBar}>

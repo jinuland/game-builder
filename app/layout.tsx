@@ -16,19 +16,16 @@ export const metadata: Metadata = {
   metadataBase: new URL(
     process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000",
   ),
-  title: "WORLDLOOM — Living Web World",
-  description:
-    "사람과 AI 주민이 같은 행동 규칙으로 살아가는 브라우저 네이티브 게임 세계.",
+  title: "GAME FORGE — AI Game Builder",
+  description: "스토리 온톨로지와 게임 기획을 코딩 에이전트용 Build Goal로 변환합니다.",
   openGraph: {
-    title: "WORLDLOOM",
-    description: "Every mind plays by the same rules.",
-    images: [{ url: "/og-character.png", width: 1672, height: 941 }],
+    title: "GAME FORGE",
+    description: "From game idea to implementation-ready Build Goal.",
   },
   twitter: {
-    card: "summary_large_image",
-    title: "WORLDLOOM",
-    description: "Every mind plays by the same rules.",
-    images: ["/og-character.png"],
+    card: "summary",
+    title: "GAME FORGE",
+    description: "From game idea to implementation-ready Build Goal.",
   },
   icons: {
     icon: "/favicon.svg",
