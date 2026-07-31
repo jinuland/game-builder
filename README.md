@@ -32,6 +32,23 @@ PolyForm Noncommercial 1.0.0 조건(특히 상업적 이용 제한과 고지 의
 클라이언트 코드, `NEXT_PUBLIC_*`, HTML, 브라우저 저장소에 노출하지 않습니다.
 Bedrock이나 향후 Grok 이미지 공급자 호출은 서버 Route Handler에서만 실행해야 합니다.
 
+로컬에서 GAME FORGE의 Bedrock 생성 기능을 사용하려면:
+
+```bash
+cp .env.example .env.local
+```
+
+그다음 `.env.local`에 자신의 값을 설정합니다.
+
+```dotenv
+AWS_BEARER_TOKEN_BEDROCK=your-own-bedrock-api-key
+GAMEFORGE_BEDROCK_REGION=ap-northeast-2
+GAMEFORGE_BEDROCK_MODEL_ID=us.anthropic.claude-sonnet-4-6
+```
+
+`.env.local`은 `.gitignore`에 포함되어 있으므로 커밋하지 않습니다. 운영 AWS에서는
+가능하면 장기 키 대신 실행 역할(IAM role)과 비밀 저장소를 사용하세요.
+
 ## 현재 범위
 
 - WebGL 기반 실시간 3D 캐릭터 생성기

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { createWorld, describeTile, runAction, stepAgents, type GameState, type WorldAction } from "@/lib/web-game";
 import type { HeroClass } from "./character-stage";
 
@@ -141,7 +142,7 @@ export default function Home() {
     };
     return <main className="creator">
       <header className="creatorHeader">
-        <div className="creatorBrand"><span className="brandMark">W</span><div><b>WORLDLOOM</b><small>REALM 01 · THE MIST GARDEN</small></div></div>
+        <div className="creatorBrand"><span className="brandMark">W</span><div><b>WORLDLOOM</b><small><Link href="/ontology-builder" style={{color:"inherit"}}>ONTOLOGY BUILDER →</Link></small></div></div>
         <div className="creatorTitle"><small>ORIGIN SEQUENCE</small><h1>운명을 선택하세요</h1><p>새로운 존재가 세계의 기억에 기록됩니다.</p></div>
         <div className="accountChip"><i /><div><small>WANDERER ID</small><strong>player_{game.seed.toString(16).slice(-6)}</strong></div></div>
       </header>
