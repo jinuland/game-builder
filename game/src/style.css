@@ -122,6 +122,20 @@ html, body { margin: 0; height: 100%; background: var(--midnight); color: var(--
 .az-grade-F .az-grade { color: var(--error); }
 .az-constraints { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin: 12px 0; }
 
+/* tutorial overlay */
+.az-tutorial { max-width: 560px; text-align: center; background: rgba(13,27,42,0.96);
+  border: 2px solid var(--cyan); border-radius: 16px; padding: 32px 28px;
+  box-shadow: 0 0 40px rgba(0,229,255,0.25); }
+.az-tut-icon { font-size: 56px; line-height: 1; margin-bottom: 8px; }
+.az-tutorial h2 { color: var(--cyan); margin: 8px 0; }
+.az-tutorial p { font-size: 16px; line-height: 1.7; color: rgba(245,240,232,0.9); min-height: 84px; }
+.az-tut-dots { display: flex; gap: 8px; justify-content: center; margin: 16px 0; }
+.az-tut-dot { width: 9px; height: 9px; border-radius: 50%; background: rgba(245,240,232,0.25); }
+.az-tut-dot.on { background: var(--cyan); box-shadow: 0 0 8px var(--cyan); }
+.az-tut-nav { display: flex; gap: 10px; align-items: center; justify-content: center; margin-top: 8px; }
+.az-tut-nav .az-btn { width: auto; min-width: 110px; margin: 0; }
+.az-tut-step { font-size: 13px; color: rgba(245,240,232,0.6); min-width: 48px; }
+
 .az-toast { position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px);
   background: rgba(13,27,42,0.95); border: 1px solid var(--cyan); color: var(--white); padding: 10px 20px;
   border-radius: 8px; opacity: 0; transition: opacity 0.2s, transform 0.2s; pointer-events: none; z-index: 50;

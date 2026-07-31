@@ -98,7 +98,13 @@ export class GameApp {
     if (challenge) { this.game.actIndex = 0; }
     E.startAct(this.game);
     this._markActStart();
-    this._enterBriefing();
+    // Show the tutorial once before a player's first-ever game, then continue to briefing.
+    if (localStorage.getItem('az_tut_seen') !== '1' && !challenge) {
+      localStorage.setItem('az_tut_seen', '1');
+      this._showTutorial(() => this._enterBriefing());
+    } else {
+      this._enterBriefing();
+    }
   }
 
   _markActStart() {
@@ -151,11 +157,52 @@ export class GameApp {
     cont.appendChild(h); cont.appendChild(sub); cont.appendChild(startBtn);
     if (this.hasSave()) cont.appendChild(this._btn('이어하기', () => this.loadSave()));
     if (this.challengeUnlocked) cont.appendChild(this._btn('챌린지 모드', () => this.newGame((this._chSeed = (Date.now() % 100000) + 1), true)));
+    cont.appendChild(this._btn('❓ 게임 방법', () => this._showTutorial(() => this._showTitle())));
     const mute = this._btn('🔊 사운드', () => { const m = !this.audio.muted; this.audio.setMuted(m); mute.textContent = m ? '🔇 사운드' : '🔊 사운드'; });
     cont.appendChild(mute);
     const help = document.createElement('p'); help.className = 'az-help';
     help.textContent = '조작: 좌측 모듈 클릭→그리드 클릭 배치 · R 회전 · Ctrl+Z 취소 · Space 턴 종료';
     cont.appendChild(help);
+    this.overlay.innerHTML = ''; this.overlay.appendChild(cont);
+    this.overlay.style.display = 'flex';
+  }
+
+  // Step-by-step tutorial overlay. `onDone` runs when closed. Shown from title
+  // ("게임 방법") and automatically once before the first playthrough.
+  _showTutorial(onDone) {
+    const prevScene = this.scene;
+    this.scene = 'tutorial';
+    const pages = [
+      { icon: '🎯', h: '당신은 시스템 설계자', p: '제한된 그리드(서버 공간)에 모듈 블록을 배치해 클라이언트 요구사항을 맞추는 퍼즐입니다. 테트리스처럼 공간을 관리하면서, 카드로 아키텍처를 강화합니다.' },
+      { icon: '📋', h: '1. 요구사항을 읽는다', p: '왼쪽 위 "요구사항 카드"가 필요한 모듈을 알려줍니다. 예: "빠른 응답 — 필요 모듈: 캐시" → 캐시 모듈을 그리드에 놓으면 됩니다.' },
+      { icon: '🧩', h: '2. 모듈을 배치한다', p: '왼쪽 "모듈 팔레트"에서 모듈을 클릭해 선택하고, 가운데 그리드의 빈 칸을 클릭해 놓습니다. 초록 칸=배치 가능, 빨간 X=불가. R키로 회전할 수 있어요.' },
+      { icon: '🔗', h: '3. 모듈을 붙여 놓는다', p: '모듈끼리 이웃하게 놓으면 연결됩니다. 뚝 떨어뜨리거나 엉뚱한 레이어(엣지/컴퓨트/데이터)에 놓으면 "기술 부채"가 오릅니다.' },
+      { icon: '📊', h: '두 개의 핵심 숫자', p: '오른쪽 온도계 = 기술 부채(낮을수록 좋음, 100이면 크래시). 금색 숫자 = 시너지 점수(높을수록 좋음). 이 둘의 균형이 최종 등급(S~F)을 정합니다.' },
+      { icon: '⏭', h: '4. 턴을 종료한다', p: '요구 모듈을 놓았으면 오른쪽 "턴 종료(Space)"를 누릅니다. 다음 요구사항이 나옵니다. 막 2부터는 패턴 카드(3장 중 1장)를 골라 덱을 만들고, 막 3부터는 장애 이벤트에 대응합니다.' },
+    ];
+    let i = 0;
+    const cont = document.createElement('div'); cont.className = 'az-tutorial';
+    const render = () => {
+      const pg = pages[i];
+      cont.innerHTML = '';
+      const icon = document.createElement('div'); icon.className = 'az-tut-icon'; icon.textContent = pg.icon;
+      const h = document.createElement('h2'); h.textContent = pg.h;
+      const p = document.createElement('p'); p.textContent = pg.p;
+      const dots = document.createElement('div'); dots.className = 'az-tut-dots';
+      pages.forEach((_, k) => { const d = document.createElement('span'); d.className = 'az-tut-dot' + (k === i ? ' on' : ''); dots.appendChild(d); });
+      const nav = document.createElement('div'); nav.className = 'az-tut-nav';
+      if (i > 0) nav.appendChild(this._btn('◀ 이전', () => { i--; render(); }));
+      const step = document.createElement('div'); step.className = 'az-tut-step'; step.textContent = `${i + 1} / ${pages.length}`;
+      nav.appendChild(step);
+      const nextBtn = this._btn(i === pages.length - 1 ? '시작하기 ▶' : '다음 ▶', () => {
+        if (i === pages.length - 1) { this.scene = prevScene; if (onDone) onDone(); }
+        else { i++; render(); }
+      });
+      nextBtn.classList.add('az-primary');
+      nav.appendChild(nextBtn);
+      cont.appendChild(icon); cont.appendChild(h); cont.appendChild(p); cont.appendChild(dots); cont.appendChild(nav);
+    };
+    render();
     this.overlay.innerHTML = ''; this.overlay.appendChild(cont);
     this.overlay.style.display = 'flex';
   }
@@ -560,6 +607,8 @@ export class GameApp {
     this.rightPanel.appendChild(endBtn);
     const undoBtn = this._btn('취소 (Ctrl+Z)', () => this._undo());
     this.rightPanel.appendChild(undoBtn);
+    const helpBtn = this._btn('❓ 게임 방법', () => this._showTutorial(() => { this.overlay.style.display = 'none'; this.scene = 'play'; this._renderPanels(); }));
+    this.rightPanel.appendChild(helpBtn);
   }
 
   _confirmEndTurn() {
@@ -733,6 +782,8 @@ export class GameApp {
       if (best) return E.placeModule(g, mid, best.c, best.r, 0);
       return null;
     };
+    if (state === 'tutorial') { this._showTutorial(() => {}); return; }
+    localStorage.setItem('az_tut_seen', '1'); // skip auto-tutorial for scripted states
     this.newGame(42);
     if (state === 'briefing') return;
     this._enterPlayWithSteps();

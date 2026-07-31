@@ -1,0 +1,4 @@
+AWS service icons in this folder are from the "aws-icons" npm package
+(https://www.npmjs.com/package/aws-icons), MIT License, Copyright (c) 2023
+Mohammad Abu Mattar, based on the official AWS Architecture Icon set.
+Used here for an educational, non-commercial AWS architecture trainer.
