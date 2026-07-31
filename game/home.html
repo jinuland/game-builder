@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AWS 러닝 아케이드</title>
+  <style>
+    :root { --bg:#0d1117; --panel:#161b26; --line:#2a3444; --cyan:#4dd0e1; --orange:#ed7100; --text:#e6edf3; --dim:#8b98a8; --purple:#8c4fff; }
+    * { box-sizing:border-box; }
+    html,body { margin:0; min-height:100%; background:var(--bg); color:var(--text); font-family:system-ui,-apple-system,'Segoe UI',sans-serif; }
+    .wrap { max-width:960px; margin:0 auto; padding:6vh 20px; text-align:center; }
+    h1 { font-size:44px; margin:0; background:linear-gradient(90deg,#ff9900,#4dd0e1,#8c4fff); -webkit-background-clip:text; background-clip:text; color:transparent; }
+    .sub { color:var(--dim); font-size:17px; margin:14px 0 36px; }
+    .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:20px; }
+    .card { background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:26px; text-align:left;
+      text-decoration:none; color:var(--text); transition:transform .1s, border-color .1s; display:flex; flex-direction:column; }
+    .card:hover { transform:translateY(-4px); border-color:var(--cyan); }
+    .card .tag { font-size:12px; font-weight:700; padding:3px 10px; border-radius:20px; display:inline-block; align-self:flex-start; }
+    .card h2 { margin:12px 0 8px; font-size:22px; }
+    .card p { color:var(--dim); line-height:1.6; font-size:14px; flex:1; }
+    .card .go { margin-top:14px; color:var(--orange); font-weight:700; }
+    .featured { border-color:var(--purple); box-shadow:0 0 24px rgba(140,79,255,0.2); }
+    .foot { color:var(--dim); font-size:12px; margin-top:36px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>AWS 러닝 아케이드</h1>
+    <p class="sub">스토리로 배우고, 아키텍처로 익히고, 설계로 놀다 — 넥서스 테크 클라우드 아카데미</p>
+    <div class="cards">
+      <a class="card featured" href="story.html">
+        <span class="tag" style="background:rgba(140,79,255,0.2);color:#b088ff">STORY · 심화 · 수료증</span>
+        <h2>AWS 스페셜리스트 사가</h2>
+        <p>멘토 4인과 함께 컨테이너·AI·데이터·보안 위기를 해결하는 스토리 기반 심화 트레이너. 자격증 수준 문제를 풀고 완주하면 수료증을 발급합니다.</p>
+        <span class="go">사가 시작 ▶</span>
+      </a>
+      <a class="card" href="aws.html">
+        <span class="tag" style="background:rgba(237,113,0,0.2);color:#ffb060">QUIZ · SAA 기본</span>
+        <h2>AWS 아키텍트 트레이너</h2>
+        <p>실제 AWS 아이콘으로 아키텍처 빈칸을 채우고 서비스 역할·시나리오를 맞히는 기본 퀴즈. 3-tier 웹, 서버리스 API 등 6종.</p>
+        <span class="go">퀴즈 시작 ▶</span>
+      </a>
+      <a class="card" href="index.html">
+        <span class="tag" style="background:rgba(77,208,225,0.2);color:#7fe3f0">PUZZLE · 전략</span>
+        <h2>아키텍트 제로</h2>
+        <p>그리드 배치 퍼즐 × 패턴 카드 덱빌딩 × 기술 부채 관리. 5막 스토리로 설계 감각을 기르는 전략 게임.</p>
+        <span class="go">게임 시작 ▶</span>
+      </a>
+    </div>
+    <p class="foot">AWS 아키텍처 아이콘: aws-icons (MIT) · 캐릭터/배경: 생성 이미지 · 사운드: 런타임 합성 · 학습용 비공식 콘텐츠</p>
+  </div>
+</body>
+</html>
