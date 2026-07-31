@@ -12,6 +12,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Standalone vanilla-JS games served statically (not part of the Next app).
+    "game/**",
+    "public/game/**",
+    "image-mcp/**",
   ]),
 ]);
 

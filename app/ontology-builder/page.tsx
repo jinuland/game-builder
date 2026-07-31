@@ -73,6 +73,10 @@ export default function OntologyBuilder() {
   const [requestStartedAt, setRequestStartedAt] = useState<number | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  // Generated images keyed by prompt (dataUrl or error), plus per-prompt loading flag.
+  const [images, setImages] = useState<Record<string, { url?: string; error?: string; model?: string }>>({});
+  const [imageLoading, setImageLoading] = useState<string | null>(null);
+  const [imageModel, setImageModel] = useState("stable-core");
   const generationLock = useRef(false);
   const activeController = useRef<AbortController | null>(null);
   const genre = genreProfiles.find((item) => item.id === genreId) ?? genreProfiles[0];
@@ -168,6 +172,31 @@ export default function OntologyBuilder() {
       setStatus(`${data.model ?? "Bedrock"} 생성 완료. 자동 저장했습니다.`);
     } catch (error) { setStatus(error instanceof DOMException && error.name === "TimeoutError" ? "Bedrock 응답이 제한 시간을 초과했습니다. 작업을 종료했습니다. 다시 시도해주세요." : error instanceof Error ? error.message : "Bedrock 요청에 실패했습니다."); }
     finally { generationLock.current = false; activeController.current = null; setLoading(null); setRequestStartedAt(null); }
+  };
+
+  // Generate a single image from an imageGenerationPlan prompt via the Bedrock key.
+  const generateImage = async (prompt: string, kind: "character" | "environment", index: number) => {
+    const key = `${kind}:${index}`;
+    if (imageLoading) { setStatus("다른 이미지를 생성 중입니다. 완료 후 다시 시도하세요."); return; }
+    setImageLoading(key);
+    setStatus(`${kind === "character" ? "캐릭터" : "배경"} 이미지를 생성하고 있습니다… (Bedrock)`);
+    try {
+      const aspectRatio = kind === "character" ? "2:3" : "16:9";
+      const response = await fetch("/api/ontology/image", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt, model: imageModel, aspectRatio }),
+        signal: AbortSignal.timeout(GENERATION_TIMEOUT_MS),
+      });
+      const data = await response.json() as { image?: string; model?: string; error?: string };
+      if (!response.ok || !data.image) throw new Error(data.error ?? "이미지를 받지 못했습니다.");
+      setImages((current) => ({ ...current, [key]: { url: data.image, model: data.model } }));
+      setStatus(`이미지 생성 완료 (${data.model ?? "Bedrock"}).`);
+    } catch (error) {
+      const message = error instanceof DOMException && error.name === "TimeoutError"
+        ? "이미지 생성이 제한 시간을 초과했습니다." : error instanceof Error ? error.message : "이미지 생성 실패";
+      setImages((current) => ({ ...current, [key]: { error: message } }));
+      setStatus(message);
+    } finally { setImageLoading(null); }
   };
 
   const save = () => {
@@ -315,7 +344,44 @@ export default function OntologyBuilder() {
           <article><small>ANIMATION & ASSET PIPELINE</small><ul>{[...goals.artDirection.animationPlan, ...goals.artDirection.assetPipeline].map((item, index) => <li key={index}>{item}</li>)}</ul></article>
         </div>
         <div className={styles.productionPlans}>
-          <article><small>IMAGE MODEL PRODUCTION</small><p>{goals.imageGenerationPlan.modelWorkflow}</p><b>CHARACTER PROMPTS</b><ol>{goals.imageGenerationPlan.characterPrompts.map((item, index) => <li key={index}>{item}</li>)}</ol><b>ENVIRONMENT PROMPTS</b><ol>{goals.imageGenerationPlan.environmentPrompts.map((item, index) => <li key={index}>{item}</li>)}</ol></article>
+          <article><small>IMAGE MODEL PRODUCTION</small><p>{goals.imageGenerationPlan.modelWorkflow}</p>
+            <div className={styles.imageToolbar}>
+              <label>이미지 모델
+                <select value={imageModel} onChange={(event) => setImageModel(event.target.value)}>
+                  <option value="stable-core">Stable Image Core (빠름·기본)</option>
+                  <option value="stable-ultra">Stable Image Ultra (고품질)</option>
+                  <option value="sd3.5-large">SD 3.5 Large</option>
+                </select>
+              </label>
+              <span className={styles.imageHint}>Bedrock API key(.env.local)로 브라우저에서 바로 생성됩니다.</span>
+            </div>
+            <b>CHARACTER PROMPTS</b>
+            <ol>{goals.imageGenerationPlan.characterPrompts.map((item, index) => {
+              const state = images[`character:${index}`];
+              const busy = imageLoading === `character:${index}`;
+              return (
+                <li key={index}>
+                  <p className={styles.promptText}>{item}</p>
+                  <button type="button" className={styles.imageButton} disabled={Boolean(imageLoading)} onClick={() => generateImage(item, "character", index)}>{busy ? "생성 중…" : state?.url ? "다시 생성" : "이미지 생성"}</button>
+                  {state?.url && <div className={styles.imageResult}><img src={state.url} alt={`character ${index + 1}`} /><a href={state.url} download={`character-${index + 1}.png`}>PNG 다운로드</a></div>}
+                  {state?.error && <p className={styles.imageError}>{state.error}</p>}
+                </li>
+              );
+            })}</ol>
+            <b>ENVIRONMENT PROMPTS</b>
+            <ol>{goals.imageGenerationPlan.environmentPrompts.map((item, index) => {
+              const state = images[`environment:${index}`];
+              const busy = imageLoading === `environment:${index}`;
+              return (
+                <li key={index}>
+                  <p className={styles.promptText}>{item}</p>
+                  <button type="button" className={styles.imageButton} disabled={Boolean(imageLoading)} onClick={() => generateImage(item, "environment", index)}>{busy ? "생성 중…" : state?.url ? "다시 생성" : "이미지 생성"}</button>
+                  {state?.url && <div className={styles.imageResult}><img src={state.url} alt={`environment ${index + 1}`} /><a href={state.url} download={`environment-${index + 1}.png`}>PNG 다운로드</a></div>}
+                  {state?.error && <p className={styles.imageError}>{state.error}</p>}
+                </li>
+              );
+            })}</ol>
+          </article>
           <article><small>BALANCE VALIDATION</small>{Object.entries(goals.balancePlan).map(([section, items]) => <div key={section}><b>{section.replace(/[A-Z]/g, (letter) => ` ${letter}`).toUpperCase()}</b><ul>{items.map((item, index) => <li key={index}>{item}</li>)}</ul></div>)}</article>
         </div>
         <div className={styles.funIteration}>

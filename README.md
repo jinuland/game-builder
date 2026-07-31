@@ -33,6 +33,7 @@ GAMEFORGE_BEDROCK_MODEL_ID=us.anthropic.claude-sonnet-4-6
 - 사용자 피드백을 반영한 기획안 재생성
 - Bedrock 기반 Build Goal 생성
 - 이미지 제작, 밸런스, 플레이테스트, 완료 계약을 포함한 실행 명세
+- **워크숍 내 이미지 생성**: Build Goal의 캐릭터·배경 프롬프트마다 `이미지 생성` 버튼을 눌러 Bedrock(Stability)으로 바로 PNG를 만들고 미리보기·다운로드 (`.env.local`의 `AWS_BEARER_TOKEN_BEDROCK` 키 하나로 동작, 별도 설정 불필요)
 - 프로젝트별 브라우저 저장과 JSON·Markdown 내보내기
 
 ## 검증
