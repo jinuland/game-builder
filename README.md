@@ -10,7 +10,7 @@ cp .env.example .env.local
 npm run dev
 ```
 
-브라우저에서 `http://localhost:3000/ontology-builder`를 엽니다.
+브라우저에서 `http://localhost:3000/game-builder`를 엽니다.
 
 ## Bedrock 설정
 
