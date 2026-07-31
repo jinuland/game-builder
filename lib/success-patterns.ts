@@ -273,17 +273,20 @@ export type GenreProfile = {
   playerFantasy: string;
   formulaIds: string[];
   color: string;
+  // Well-known representative titles (for user recognition) + a thumbnail image.
+  examples: string[];
+  image: string;
 };
 
 export const genreProfiles: GenreProfile[] = [
-  { id: "defense", name: "디펜스", tagline: "예측하고 배치해 밀려오는 위협을 막는다", playerFantasy: "열세 속에서 방어선을 설계하는 지휘관", formulaIds: ["pvz-readable-counters", "slay-spire-synergy"], color: "#efb45e" },
-  { id: "action-rpg", name: "액션 RPG", tagline: "전투 숙련과 성장으로 강한 적을 돌파한다", playerFantasy: "위험을 학습해 한계를 넘어서는 전사", formulaIds: ["dark-souls-risk-mastery", "hades-failure-story"], color: "#e36f62" },
-  { id: "roguelite", name: "로그라이트", tagline: "실패할 때마다 새로운 빌드와 이야기가 열린다", playerFantasy: "불확실한 조합을 자신의 전략으로 완성하는 도전자", formulaIds: ["hades-failure-story", "slay-spire-synergy"], color: "#ad82e8" },
-  { id: "adventure", name: "어드벤처", tagline: "탐험과 선택으로 세계의 비밀을 발견한다", playerFantasy: "자신의 호기심으로 길과 해법을 만드는 탐험가", formulaIds: ["zelda-systemic-curiosity", "last-of-us-bond-pressure"], color: "#64b9e8" },
-  { id: "survival", name: "생존·제작", tagline: "제약 속에서 자원을 모아 살아갈 터전을 만든다", playerFantasy: "가혹한 세계를 살 수 있는 장소로 바꾸는 개척자", formulaIds: ["minecraft-survival-expression", "dark-souls-risk-mastery"], color: "#7ec987" },
-  { id: "life-sim", name: "생활 시뮬레이션", tagline: "일상 선택이 관계와 공간의 변화로 쌓인다", playerFantasy: "나만의 생활과 공동체를 가꾸는 주민", formulaIds: ["stardew-routine-belonging", "minecraft-survival-expression"], color: "#e994ae" },
-  { id: "platformer", name: "플랫포머", tagline: "움직임을 익혀 정교하게 설계된 장애를 넘는다", playerFantasy: "몸의 리듬과 공간을 지배하는 곡예가", formulaIds: ["mario-teach-through-play", "tetris-clarity-pressure"], color: "#66d7c1" },
-  { id: "puzzle-strategy", name: "퍼즐·전략", tagline: "명확한 규칙 속에서 깊은 해법과 시너지를 찾는다", playerFantasy: "복잡한 상태를 읽고 우아한 해법을 만드는 설계자", formulaIds: ["tetris-clarity-pressure", "slay-spire-synergy"], color: "#ddcf69" },
+  { id: "defense", name: "디펜스", tagline: "예측하고 배치해 밀려오는 위협을 막는다", playerFantasy: "열세 속에서 방어선을 설계하는 지휘관", formulaIds: ["pvz-readable-counters", "slay-spire-synergy"], color: "#efb45e", examples: ["Plants vs. Zombies", "Kingdom Rush", "Bloons TD"], image: "/genre/defense.webp" },
+  { id: "action-rpg", name: "액션 RPG", tagline: "전투 숙련과 성장으로 강한 적을 돌파한다", playerFantasy: "위험을 학습해 한계를 넘어서는 전사", formulaIds: ["dark-souls-risk-mastery", "hades-failure-story"], color: "#e36f62", examples: ["Dark Souls", "Diablo", "Elden Ring"], image: "/genre/action-rpg.webp" },
+  { id: "roguelite", name: "로그라이트", tagline: "실패할 때마다 새로운 빌드와 이야기가 열린다", playerFantasy: "불확실한 조합을 자신의 전략으로 완성하는 도전자", formulaIds: ["hades-failure-story", "slay-spire-synergy"], color: "#ad82e8", examples: ["Hades", "Slay the Spire", "Balatro"], image: "/genre/roguelite.webp" },
+  { id: "adventure", name: "어드벤처", tagline: "탐험과 선택으로 세계의 비밀을 발견한다", playerFantasy: "자신의 호기심으로 길과 해법을 만드는 탐험가", formulaIds: ["zelda-systemic-curiosity", "last-of-us-bond-pressure"], color: "#64b9e8", examples: ["The Legend of Zelda", "Journey", "Firewatch"], image: "/genre/adventure.webp" },
+  { id: "survival", name: "생존·제작", tagline: "제약 속에서 자원을 모아 살아갈 터전을 만든다", playerFantasy: "가혹한 세계를 살 수 있는 장소로 바꾸는 개척자", formulaIds: ["minecraft-survival-expression", "dark-souls-risk-mastery"], color: "#7ec987", examples: ["Minecraft", "Valheim", "Don't Starve"], image: "/genre/survival.webp" },
+  { id: "life-sim", name: "생활 시뮬레이션", tagline: "일상 선택이 관계와 공간의 변화로 쌓인다", playerFantasy: "나만의 생활과 공동체를 가꾸는 주민", formulaIds: ["stardew-routine-belonging", "minecraft-survival-expression"], color: "#e994ae", examples: ["Stardew Valley", "Animal Crossing", "The Sims"], image: "/genre/life-sim.webp" },
+  { id: "platformer", name: "플랫포머", tagline: "움직임을 익혀 정교하게 설계된 장애를 넘는다", playerFantasy: "몸의 리듬과 공간을 지배하는 곡예가", formulaIds: ["mario-teach-through-play", "tetris-clarity-pressure"], color: "#66d7c1", examples: ["Super Mario Bros.", "Celeste", "Hollow Knight"], image: "/genre/platformer.webp" },
+  { id: "puzzle-strategy", name: "퍼즐·전략", tagline: "명확한 규칙 속에서 깊은 해법과 시너지를 찾는다", playerFantasy: "복잡한 상태를 읽고 우아한 해법을 만드는 설계자", formulaIds: ["tetris-clarity-pressure", "slay-spire-synergy"], color: "#ddcf69", examples: ["Tetris", "Into the Breach", "Baba Is You"], image: "/genre/puzzle-strategy.webp" },
 ];
 
 export function formulasForGenre(genreId: string) {

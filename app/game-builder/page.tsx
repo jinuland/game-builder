@@ -235,7 +235,10 @@ export default function OntologyBuilder() {
     <section className={styles.genreSection}>
       <div className={styles.sectionHead}><span>01</span><div><h2>대표 장르를 선택하세요</h2><p>성공작 분석은 내부 지식으로 사용되고 고객에게는 장르의 플레이 약속만 보입니다.</p></div></div>
       <div className={styles.genreGrid}>{genreProfiles.map((item) => <button key={item.id} disabled={!!loading} className={genreId === item.id ? styles.genreActive : ""} style={{"--genre": item.color} as React.CSSProperties} onClick={() => { setGenreId(item.id); setStory(null); setConcept(null); setGoals(null); }}>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img className={styles.genreThumb} src={item.image} alt={`${item.name} 예시`} loading="lazy" />
         <small>{item.name}</small><strong>{item.tagline}</strong><span>{item.playerFantasy}</span>
+        <em className={styles.genreExamples}>예: {item.examples.join(" · ")}</em>
       </button>)}</div>
     </section>
 
