@@ -103,8 +103,37 @@ async function generate(schema: object, toolName: string, system: string, payloa
   return { result: input, model: modelId, usage: response.usage };
 }
 
-type DesignRequest = { action?: "story" | "concept" | "goals"; genreId?: string; idea?: string; story?: unknown; concept?: unknown; feedback?: string; actCount?: number };
+type ChatTurn = { role: "user" | "assistant"; content: string };
+type DesignRequest = {
+  action?: "story" | "concept" | "goals" | "refine";
+  genreId?: string;
+  customGenre?: string;   // free-text genre when genreId === "custom"
+  idea?: string;
+  story?: unknown;
+  concept?: unknown;
+  feedback?: string;
+  actCount?: number | "auto";
+  chat?: ChatTurn[];      // conversation history for interactive story refinement
+  message?: string;       // latest user instruction for "refine"
+};
 let activeGoalRequestId: string | null = null;
+
+// Resolve the working genre: a preset profile, or a synthesized profile for a
+// user's custom genre. Custom genres carry NO internal formulas so the model
+// leans on the idea itself rather than a reference game's pattern.
+function resolveGenre(body: DesignRequest) {
+  if (body.genreId === "custom") {
+    const label = (body.customGenre ?? "").trim().slice(0, 60);
+    if (label.length < 2) throw new Error("커스텀 장르 이름을 입력해주세요.");
+    return {
+      genre: { id: "custom", name: label, playerFantasy: "", tagline: "", custom: true },
+      formulas: [] as unknown[],
+    };
+  }
+  const genre = genreProfiles.find((item) => item.id === body.genreId);
+  if (!genre) throw new Error("장르를 선택해주세요.");
+  return { genre: { ...genre, custom: false }, formulas: formulasForGenre(genre.id) };
+}
 
 function textOkay(value: unknown, minimum = 8) {
   return typeof value === "string" && value.trim().length >= minimum && !/^(placeholder|todo|tbd|미정|추후 작성)[\s.!…]*$/i.test(value.trim());
@@ -315,20 +344,29 @@ async function runDesign(body: DesignRequest, requestSignal?: AbortSignal) {
   if (body.action === "goals") activeGoalRequestId = requestId;
   console.log("[gameforge-design]", JSON.stringify({ event: "bedrock_start", requestId, action: body.action, genreId: body.genreId, at: new Date().toISOString() }));
   try {
-    const genre = genreProfiles.find((item) => item.id === body.genreId);
-    if (!genre) throw new Error("장르를 선택해주세요.");
-    const formulas = formulasForGenre(genre.id);
+    const { genre, formulas } = resolveGenre(body);
     if (body.action === "story") {
       if (!body.idea || body.idea.trim().length < 10) throw new Error("아이디어를 조금 더 자세히 적어주세요.");
-      const actCount = [3, 5, 7].includes(body.actCount ?? 5) ? body.actCount ?? 5 : 5;
+      // "auto" lets the model choose the act count that best fits the idea; a number is a soft target.
+      const autoActs = body.actCount === "auto" || body.actCount == null;
+      const actCount = autoActs ? "auto" : ([3, 5, 7, 4, 6].includes(body.actCount as number) ? body.actCount : 5);
+      const actInstruction = autoActs
+        ? "막 수는 아이디어의 서사 크기에 맞게 3~7막 사이에서 스스로 정한다. 짧고 강렬한 아이디어는 3막, 복잡한 아이디어는 더 많은 막을 쓴다."
+        : `막 수는 ${actCount}막을 기본 목표로 하되, 아이디어에 더 잘 맞으면 ±1막 조정할 수 있다.`;
+      const patternHint = genre.custom
+        ? `장르는 사용자가 직접 정의한 "${genre.name}"이다. 정해진 참조 공식이 없으므로 오직 아이디어 자체에서 핵심 재미·플레이 루프·긴장 구조를 도출한다.`
+        : `참고 장르는 "${genre.name}"이며 내부 성공 패턴(internalPatterns)은 영감의 재료일 뿐이다. 아이디어가 장르 관례와 어긋나면 아이디어를 우선하고 패턴은 느슨하게만 참고한다.`;
       const generated = await generate(
         storySchema,
         "build_editable_game_story",
-        `너는 GAME FORGE의 수석 게임 디렉터다. 고객 아이디어를 선택 장르의 내부 성공 패턴에 매핑해 독창적이고 플레이 가능한 게임 스토리를 만든다.
+        `너는 GAME FORGE의 수석 게임 디렉터다. 무엇보다 고객의 아이디어를 최우선으로 존중해 독창적이고 플레이 가능한 게임 스토리를 만든다.
+${patternHint}
+아이디어에 담긴 고유한 소재·톤·감정·소재를 그대로 살리고, 장르 틀에 억지로 끼워 맞춰 일반적인 결과를 내지 않는다.
 참조작의 고유 캐릭터·명칭·대사·세계·레벨은 절대 복제하지 않는다. 패턴은 추상 규칙으로만 사용한다.
 스토리의 모든 막에는 플레이어가 실제로 하는 행동과 코드로 관찰 가능한 상태 변화가 있어야 한다.
-설정만 흥미롭고 플레이가 빈약한 결과를 피한다. 요청된 막 수를 정확히 지키고, 각 막이 서로 다른 플레이 상황과 상태 변화를 만들게 한다. coreLoop 5개, nodes 10개 이하, edges 12개 이하, designRationale 3개로 작성한다. 각 설명은 한 문장으로 제한하고 전체 결과를 간결하게 한다. nodes와 edges는 사용자가 편집할 게임 온톨로지다. 한국어로 작성한다.`,
-        { genre, idea: body.idea, requestedActCount: actCount, internalPatterns: formulas }, true, requestSignal,
+설정만 흥미롭고 플레이가 빈약한 결과를 피한다. ${actInstruction} 각 막이 서로 다른 플레이 상황과 상태 변화를 만들게 한다.
+coreLoop은 아이디어의 핵심 반복 행동에 맞게 3~6개로 필요한 만큼만, nodes는 12개 이하, edges는 14개 이하, designRationale은 3개로 작성한다. 각 설명은 한 문장으로 제한하고 전체 결과를 간결하게 한다. nodes와 edges는 아이디어의 실제 개념(등장물·자원·규칙·목표)에서 도출한 사용자 편집용 게임 온톨로지다. 한국어로 작성한다.`,
+        { genre, idea: body.idea, requestedActCount: actCount, internalPatterns: formulas, ideaFirst: true }, true, requestSignal,
       );
       const normalizedStory = normalizeStoryOntology(generated.result);
       if (normalizedStory.repaired) console.warn("[gameforge-design]", JSON.stringify({ event: "ontology_repaired", requestId, action: body.action, at: new Date().toISOString() }));
@@ -387,6 +425,30 @@ completionContract에는 다음 실행 계약을 빠짐없이 포함한다:
       }
       console.log("[gameforge-design]", JSON.stringify({ event: "bedrock_complete", requestId, action: body.action, elapsedMs: Date.now() - requestStartedAt, at: new Date().toISOString() }));
       return { ...generated, result: resultSummary, normalizedStory: normalizedStory.story };
+    }
+    if (body.action === "refine") {
+      // Interactive story refinement: apply the user's chat instruction to the
+      // current story, returning a full updated story that keeps ontology causality.
+      if (!body.story) throw new Error("다듬을 스토리가 없습니다. 먼저 스토리를 생성하세요.");
+      const message = (body.message ?? "").trim();
+      if (message.length < 2) throw new Error("스토리에 대한 요청을 입력해주세요.");
+      const normalizedStory = normalizeStoryOntology(body.story);
+      const history = Array.isArray(body.chat) ? body.chat.slice(-6).map((t) => `${t.role === "user" ? "사용자" : "디렉터"}: ${String(t.content).slice(0, 500)}`).join("\n") : "";
+      const generated = await generate(
+        storySchema,
+        "refine_editable_game_story",
+        `너는 GAME FORGE의 게임 디렉터다. 입력의 currentStory에 대해 userRequest(사용자 지시)를 반드시 실제로 반영한 새 스토리를 반환한다.
+가장 중요한 규칙: userRequest에 담긴 변경을 눈에 보이게 적용해야 한다. 요청을 무시하거나 원본을 그대로 되돌려주는 것은 실패다.
+- 요청이 등장인물·소재·톤 변경이면 관련 필드(playerRole, logline, world, nodes, acts 내용)를 실제로 바꾼다.
+- 요청이 "N막으로" 또는 막 추가/삭제이면 acts 배열의 길이를 정확히 그 수로 맞춘다.
+- 요청이 특정 막·요소만 겨냥하면 그 부분만 바꾸고 나머지는 보존한다.
+막·플레이어 행동·상태 변화·온톨로지(nodes·edges)의 인과 일관성은 유지한다. 아이디어의 고유한 톤을 살리고 클리셰로 후퇴하지 않는다. 참조작 고유 요소는 복제하지 않는다.
+결과는 편집 가능한 전체 스토리다. coreLoop 3~6개, nodes 12개 이하, edges 14개 이하, designRationale 3개. 각 설명 한 문장. 한국어로 작성한다.`,
+        { instruction: "아래 userRequest를 반드시 반영해 currentStory를 수정하라", userRequest: message, currentStory: normalizedStory.story, genre, conversation: history }, true, requestSignal,
+      );
+      const refined = normalizeStoryOntology(generated.result);
+      console.log("[gameforge-design]", JSON.stringify({ event: "bedrock_complete", requestId, action: body.action, elapsedMs: Date.now() - requestStartedAt, at: new Date().toISOString() }));
+      return { ...generated, result: refined.story };
     }
     if (body.action === "concept") {
       if (!body.story) throw new Error("기획안으로 발전시킬 스토리가 없습니다.");

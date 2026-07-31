@@ -34,7 +34,7 @@ const SAVE_KEY = "gameforge:genre-workshop:v2";
 const PROJECTS_KEY = "gameforge:game-projects:v1";
 const ACTIVE_PROJECT_KEY = "gameforge:active-project:v1";
 const GENERATION_TIMEOUT_MS = 15 * 60 * 1_000;
-type SavedProject = { id: string; name: string; genreId: string; idea: string; actCount: number; story: StoryDesign | null; concept: GameConcept | null; feedback: string; goals: GoalPackage | null; updatedAt: string };
+type SavedProject = { id: string; name: string; genreId: string; customGenre?: string; idea: string; actCount: number | "auto"; story: StoryDesign | null; concept: GameConcept | null; feedback: string; goals: GoalPackage | null; updatedAt: string };
 
 function download(name: string, value: unknown) {
   const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: "application/json" }));
@@ -61,8 +61,9 @@ export default function OntologyBuilder() {
   const [projectName, setProjectName] = useState("새 게임");
   const [projects, setProjects] = useState<SavedProject[]>([]);
   const [genreId, setGenreId] = useState("defense");
+  const [customGenre, setCustomGenre] = useState("");
   const [idea, setIdea] = useState("밤마다 기억을 먹는 괴물에게서 마을과 주민들의 추억을 지키는 게임. 강한 방어시설을 만들려면 누군가의 기억을 희생해야 한다.");
-  const [actCount, setActCount] = useState(5);
+  const [actCount, setActCount] = useState<number | "auto">("auto");
   const [story, setStory] = useState<StoryDesign | null>(null);
   const [concept, setConcept] = useState<GameConcept | null>(null);
   const [feedback, setFeedback] = useState("");
@@ -77,6 +78,10 @@ export default function OntologyBuilder() {
   const [images, setImages] = useState<Record<string, { url?: string; error?: string; model?: string }>>({});
   const [imageLoading, setImageLoading] = useState<string | null>(null);
   const [imageModel, setImageModel] = useState("stable-core");
+  // Interactive story refinement chat.
+  const [chat, setChat] = useState<{ role: "user" | "assistant"; content: string }[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [refining, setRefining] = useState(false);
   const generationLock = useRef(false);
   const activeController = useRef<AbortController | null>(null);
   const genre = genreProfiles.find((item) => item.id === genreId) ?? genreProfiles[0];
@@ -114,6 +119,7 @@ export default function OntologyBuilder() {
         setProjects(savedProjects);
         if (saved) { setProjectId(saved.id); setProjectName(saved.name); }
         if (saved?.genreId) setGenreId(saved.genreId);
+        if (saved?.customGenre) setCustomGenre(saved.customGenre);
         if (saved?.idea) setIdea(saved.idea);
         if (saved?.actCount) setActCount(saved.actCount);
         if (saved?.story) setStory(saved.story);
@@ -132,7 +138,7 @@ export default function OntologyBuilder() {
     const timer = window.setTimeout(() => {
       const id = projectId || crypto.randomUUID();
       if (!projectId) setProjectId(id);
-      const project: SavedProject = { id, name: projectName.trim() || story?.title || "새 게임", genreId, idea, actCount, story, concept, feedback, goals, updatedAt: new Date().toISOString() };
+      const project: SavedProject = { id, name: projectName.trim() || story?.title || "새 게임", genreId, customGenre, idea, actCount, story, concept, feedback, goals, updatedAt: new Date().toISOString() };
       setProjects((current) => {
         const next = [project, ...current.filter((item) => item.id !== id)].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
         localStorage.setItem(PROJECTS_KEY, JSON.stringify(next));
@@ -141,7 +147,7 @@ export default function OntologyBuilder() {
       localStorage.setItem(ACTIVE_PROJECT_KEY, id);
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [projectId, projectName, genreId, idea, actCount, story, concept, feedback, goals, hydrated]);
+  }, [projectId, projectName, genreId, customGenre, idea, actCount, story, concept, feedback, goals, hydrated]);
 
   useEffect(() => {
     if (!requestStartedAt) return;
@@ -160,7 +166,7 @@ export default function OntologyBuilder() {
     setStatus(action === "story" ? "장르 공식을 아이디어에 매핑해 스토리를 만들고 있습니다…" : action === "concept" ? "스토리를 캐릭터·배경·게임 방식이 보이는 기획안으로 만들고 있습니다…" : "확정된 기획안을 코딩 에이전트용 Goal로 변환하고 있습니다…");
     try {
       const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(GENERATION_TIMEOUT_MS)]);
-      const response = await fetch("/api/ontology/design", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, genreId, idea, actCount, story, concept, feedback }), signal });
+      const response = await fetch("/api/ontology/design", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, genreId, customGenre, idea, actCount, story, concept, feedback }), signal });
       const data = await response.json() as { result?: StoryDesign | GameConcept | GoalPackage; normalizedStory?: StoryDesign; model?: string; error?: string };
       if (!response.ok || !data.result) throw new Error(data.error ?? "Bedrock 결과를 받지 못했습니다.");
       if (action === "story") {
@@ -174,9 +180,10 @@ export default function OntologyBuilder() {
     finally { generationLock.current = false; activeController.current = null; setLoading(null); setRequestStartedAt(null); }
   };
 
-  // Generate a single image from an imageGenerationPlan prompt via the Bedrock key.
-  const generateImage = async (prompt: string, kind: "character" | "environment", index: number) => {
-    const key = `${kind}:${index}`;
+  // Generate a single image from a prompt via the Bedrock key. `key` namespaces
+  // the result (e.g. "concept-char:0", "character:1") so different boards don't collide.
+  const generateImage = async (prompt: string, kind: "character" | "environment", index: number, keyPrefix: string = kind) => {
+    const key = `${keyPrefix}:${index}`;
     if (imageLoading) { setStatus("다른 이미지를 생성 중입니다. 완료 후 다시 시도하세요."); return; }
     setImageLoading(key);
     setStatus(`${kind === "character" ? "캐릭터" : "배경"} 이미지를 생성하고 있습니다… (Bedrock)`);
@@ -199,9 +206,34 @@ export default function OntologyBuilder() {
     } finally { setImageLoading(null); }
   };
 
+  // Interactive: apply a chat instruction to the current story via the refine action.
+  const refineStory = async () => {
+    const message = chatInput.trim();
+    if (!message || !story || refining || !!loading) return;
+    setRefining(true);
+    const nextChat = [...chat, { role: "user" as const, content: message }];
+    setChat(nextChat); setChatInput("");
+    try {
+      const response = await fetch("/api/ontology/design", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "refine", genreId, customGenre, idea, story, message, chat: nextChat }),
+        signal: AbortSignal.timeout(GENERATION_TIMEOUT_MS),
+      });
+      const data = await response.json() as { result?: StoryDesign; error?: string };
+      if (!response.ok || !data.result) throw new Error(data.error ?? "스토리 수정 결과를 받지 못했습니다.");
+      setStory(data.result); setConcept(null); setGoals(null);
+      setChat([...nextChat, { role: "assistant", content: "요청을 반영해 스토리를 갱신했습니다." }]);
+      setStatus("대화 요청을 반영해 스토리를 수정했습니다.");
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "스토리 수정 실패";
+      setChat([...nextChat, { role: "assistant", content: `수정하지 못했습니다: ${msg}` }]);
+      setStatus(msg);
+    } finally { setRefining(false); }
+  };
+
   const save = () => {
     const id = projectId || crypto.randomUUID();
-    const project: SavedProject = { id, name: projectName.trim() || story?.title || "새 게임", genreId, idea, actCount, story, concept, feedback, goals, updatedAt: new Date().toISOString() };
+    const project: SavedProject = { id, name: projectName.trim() || story?.title || "새 게임", genreId, customGenre, idea, actCount, story, concept, feedback, goals, updatedAt: new Date().toISOString() };
     const next = [project, ...projects.filter((item) => item.id !== id)];
     localStorage.setItem(PROJECTS_KEY, JSON.stringify(next)); localStorage.setItem(ACTIVE_PROJECT_KEY, id);
     setProjectId(id); setProjects(next); setStatus(`“${project.name}” 프로젝트를 저장했습니다.`);
@@ -210,13 +242,13 @@ export default function OntologyBuilder() {
   const loadProject = (id: string) => {
     if (generationLock.current) return;
     const project = projects.find((item) => item.id === id); if (!project) return;
-    setProjectId(project.id); setProjectName(project.name); setGenreId(project.genreId); setIdea(project.idea); setActCount(project.actCount); setStory(project.story); setConcept(project.concept ?? null); setFeedback(project.feedback ?? ""); setGoals(validGoalPackage(project.goals ?? undefined) ? project.goals : null);
+    setProjectId(project.id); setProjectName(project.name); setGenreId(project.genreId); setCustomGenre(project.customGenre ?? ""); setIdea(project.idea); setActCount(project.actCount); setStory(project.story); setConcept(project.concept ?? null); setFeedback(project.feedback ?? ""); setGoals(validGoalPackage(project.goals ?? undefined) ? project.goals : null);
     localStorage.setItem(ACTIVE_PROJECT_KEY, project.id); setStatus(`“${project.name}” 프로젝트를 불러왔습니다.`);
   };
 
   const newProject = () => {
     if (generationLock.current) return;
-    const id = crypto.randomUUID(); setProjectId(id); setProjectName("새 게임"); setGenreId("defense"); setIdea(""); setActCount(5); setStory(null); setConcept(null); setFeedback(""); setGoals(null); setStatus("새 게임 프로젝트를 시작했습니다.");
+    const id = crypto.randomUUID(); setProjectId(id); setProjectName("새 게임"); setGenreId("defense"); setCustomGenre(""); setIdea(""); setActCount("auto"); setStory(null); setConcept(null); setFeedback(""); setGoals(null); setStatus("새 게임 프로젝트를 시작했습니다.");
   };
 
   return <main className={styles.shell}>
@@ -233,21 +265,35 @@ export default function OntologyBuilder() {
     </section>
 
     <section className={styles.genreSection}>
-      <div className={styles.sectionHead}><span>01</span><div><h2>대표 장르를 선택하세요</h2><p>성공작 분석은 내부 지식으로 사용되고 고객에게는 장르의 플레이 약속만 보입니다.</p></div></div>
+      <div className={styles.sectionHead}><span>01</span><div><h2>장르를 선택하거나 직접 정의하세요</h2><p>프리셋 장르는 검증된 재미 패턴을 참고로만 쓰고, 직접 입력하면 아이디어 자체에서 재미 구조를 도출합니다.</p></div></div>
       <div className={styles.genreGrid}>{genreProfiles.map((item) => <button key={item.id} disabled={!!loading} className={genreId === item.id ? styles.genreActive : ""} style={{"--genre": item.color} as React.CSSProperties} onClick={() => { setGenreId(item.id); setStory(null); setConcept(null); setGoals(null); }}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img className={styles.genreThumb} src={item.image} alt={`${item.name} 예시`} loading="lazy" />
         <small>{item.name}</small><strong>{item.tagline}</strong><span>{item.playerFantasy}</span>
         <em className={styles.genreExamples}>예: {item.examples.join(" · ")}</em>
-      </button>)}</div>
+      </button>)}
+      <button className={`${styles.customGenreCard} ${genreId === "custom" ? styles.genreActive : ""}`} disabled={!!loading} style={{"--genre": "#9fe0c4"} as React.CSSProperties} onClick={() => { setGenreId("custom"); setStory(null); setConcept(null); setGoals(null); }}>
+        <div className={styles.customGenreIcon}>✎</div>
+        <small>직접 입력</small><strong>내 아이디어에 맞는 장르를 새로 정의</strong>
+        <span>프리셋에 없는 조합·혼합 장르도 자유롭게</span>
+      </button></div>
+      {genreId === "custom" && <div className={styles.customGenreInput}>
+        <label>커스텀 장르 이름
+          <input value={customGenre} disabled={!!loading} placeholder="예: 리듬 로그라이트, 감정 관리 시뮬, 협동 미스터리…" maxLength={60} onChange={(event) => setCustomGenre(event.target.value)} />
+        </label>
+        <p>이 장르는 정해진 참조 공식 없이 아이디어에서 직접 플레이 구조를 만듭니다.</p>
+      </div>}
     </section>
 
     <div className={styles.workGrid}>
       <section className={styles.panel}>
-        <div className={styles.sectionHead}><span>02</span><div><h2>아이디어를 이야기하세요</h2><p>{genre.name}의 플레이 구조에 맞춰 확장합니다.</p></div></div>
+        <div className={styles.sectionHead}><span>02</span><div><h2>아이디어를 이야기하세요</h2><p>{genreId === "custom" ? (customGenre.trim() || "직접 정의한 장르") : genre.name}에 맞춰, 아이디어를 최우선으로 확장합니다.</p></div></div>
         <textarea className={styles.idea} value={idea} disabled={!!loading} onChange={(event) => setIdea(event.target.value)} />
-        <div className={styles.actChoice}><span>스토리 규모</span>{[3, 5, 7].map((count) => <button key={count} disabled={!!loading} className={actCount === count ? styles.choiceActive : ""} onClick={() => setActCount(count)}>{count === 3 ? "짧게 · 3막" : count === 5 ? "표준 · 5막" : "길게 · 7막"}</button>)}</div>
-        <div className={styles.hiddenFormula}><small>이 장르의 재미 설계 기준</small><strong>{genre.playerFantasy}</strong><p>AI가 {genre.name} 장르의 검증된 플레이 구조를 아이디어에 맞게 적용합니다.</p></div>
+        <div className={styles.actChoice}><span>스토리 규모</span>
+          <button disabled={!!loading} className={actCount === "auto" ? styles.choiceActive : ""} onClick={() => setActCount("auto")}>자동 · 아이디어에 맞게</button>
+          {[3, 5, 7].map((count) => <button key={count} disabled={!!loading} className={actCount === count ? styles.choiceActive : ""} onClick={() => setActCount(count)}>{count === 3 ? "짧게 · 3막" : count === 5 ? "표준 · 5막" : "길게 · 7막"}</button>)}
+        </div>
+        <div className={styles.hiddenFormula}><small>재미 설계 기준</small><strong>{genreId === "custom" ? "아이디어에서 직접 도출" : genre.playerFantasy}</strong><p>{genreId === "custom" ? "참조 공식 없이 아이디어의 고유한 재미를 살립니다." : `${genre.name} 장르의 패턴은 영감으로만 참고하고, 아이디어가 우선합니다.`}</p></div>
         <button className={styles.cta} onClick={() => callBedrock("story")} disabled={!!loading}>{loading === "story" ? "스토리 빌드 중…" : story ? "스토리 다시 빌드" : "스토리 빌드"}</button>
         {loading === "story" && <div className={styles.jobStatus}><b>● 실제 Bedrock 응답 대기 중</b><span>경과 {elapsed}초</span><small>최대 출력 64K · 결과를 받을 때까지 이 페이지를 유지해주세요.</small></div>}
         {status && !story && <p className={styles.notice}>{status}</p>}
@@ -304,7 +350,16 @@ export default function OntologyBuilder() {
             <select value={edge.target} onChange={(event) => setStory({ ...story, edges: story.edges.map((item, i) => i === index ? { ...item, target: event.target.value } : item) })}>{story.nodes.map((node) => <option key={node.id} value={node.id}>{node.name} ({node.id})</option>)}</select>
             <button aria-label={`관계 ${index + 1} 삭제`} onClick={() => setStory({ ...story, edges: story.edges.filter((_, i) => i !== index) })}>×</button>
           </div>)}</div>
-          <button className={styles.cta} onClick={() => callBedrock("concept")} disabled={!!loading}>{loading === "concept" ? "게임 기획안 생성 중…" : concept ? "스토리 검증 · 기획안 다시 만들기" : "스토리 검증 · 게임 기획안 만들기"}</button>
+          <div className={styles.chatPanel}>
+            <h3 className={styles.subhead}>스토리 대화 · AI와 함께 다듬기</h3>
+            <p className={styles.chatHint}>“3막을 더 긴장감 있게”, “주인공을 로봇으로 바꿔줘”, “결말을 열린 결말로” 처럼 자유롭게 요청하세요.</p>
+            {chat.length > 0 && <div className={styles.chatLog}>{chat.map((turn, index) => <div key={index} className={turn.role === "user" ? styles.chatUser : styles.chatAssistant}>{turn.content}</div>)}</div>}
+            <div className={styles.chatInputRow}>
+              <input className={styles.chatInput} value={chatInput} placeholder="스토리를 어떻게 바꿀까요?" disabled={refining} onChange={(event) => setChatInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); refineStory(); } }} />
+              <button className={styles.chatSend} onClick={refineStory} disabled={refining || !chatInput.trim()}>{refining ? "반영 중…" : "보내기"}</button>
+            </div>
+          </div>
+          <button className={styles.cta} onClick={() => callBedrock("concept")} disabled={!!loading || refining}>{loading === "concept" ? "게임 기획안 생성 중…" : concept ? "스토리 검증 · 기획안 다시 만들기" : "스토리 검증 · 게임 기획안 만들기"}</button>
           {loading === "concept" && <div className={styles.jobStatus}><b>● 캐릭터·배경·게임 방식 설계 중</b><span>경과 {elapsed}초</span><small>완료되면 아래 기획안에서 직접 검토하고 수정할 수 있습니다.</small></div>}
           {status && <p className={styles.notice}>{status}</p>}
         </fieldset>}
@@ -323,6 +378,48 @@ export default function OntologyBuilder() {
           <article><small>CHARACTERS</small><textarea value={concept.visual.characters.join("\n\n")} onChange={(event) => setConcept({ ...concept, visual: { ...concept.visual, characters: event.target.value.split(/\n\s*\n/).filter(Boolean) } })} /><b>IMAGE MODEL PROMPTS</b><textarea value={concept.visual.characterImagePrompts.join("\n\n")} onChange={(event) => setConcept({ ...concept, visual: { ...concept.visual, characterImagePrompts: event.target.value.split(/\n\s*\n/).filter(Boolean) } })} /></article>
           <article><small>ENVIRONMENTS</small><label>스타일<textarea value={concept.visual.style} onChange={(event) => setConcept({ ...concept, visual: { ...concept.visual, style: event.target.value } })} /></label><label>카메라<textarea value={concept.visual.camera} onChange={(event) => setConcept({ ...concept, visual: { ...concept.visual, camera: event.target.value } })} /></label><textarea value={concept.visual.environments.join("\n\n")} onChange={(event) => setConcept({ ...concept, visual: { ...concept.visual, environments: event.target.value.split(/\n\s*\n/).filter(Boolean) } })} /><b>IMAGE MODEL PROMPTS</b><textarea value={concept.visual.environmentImagePrompts.join("\n\n")} onChange={(event) => setConcept({ ...concept, visual: { ...concept.visual, environmentImagePrompts: event.target.value.split(/\n\s*\n/).filter(Boolean) } })} /></article>
           <article><small>PROGRESSION & FAILURE</small><label>성장<textarea value={concept.gameplay.progression.join("\n")} onChange={(event) => setConcept({ ...concept, gameplay: { ...concept.gameplay, progression: event.target.value.split("\n").filter(Boolean) } })} /></label><label>실패·재도전<textarea value={concept.gameplay.failureAndRecovery.join("\n")} onChange={(event) => setConcept({ ...concept, gameplay: { ...concept.gameplay, failureAndRecovery: event.target.value.split("\n").filter(Boolean) } })} /></label><label>콘텐츠 구성<textarea value={concept.contentPlan.join("\n")} onChange={(event) => setConcept({ ...concept, contentPlan: event.target.value.split("\n").filter(Boolean) })} /></label></article>
+        </div>
+        <div className={styles.designDoc}>
+          <div className={styles.designDocHead}>
+            <div><small>DESIGN DOC · 비주얼 보드</small><h3>실제 이미지로 보는 캐릭터 · 배경</h3></div>
+            <label className={styles.designDocModel}>모델
+              <select value={imageModel} disabled={!!imageLoading} onChange={(event) => setImageModel(event.target.value)}>
+                <option value="stable-core">Stable Image Core</option>
+                <option value="stable-ultra">Stable Image Ultra</option>
+                <option value="sd3.5-large">SD 3.5 Large</option>
+              </select>
+            </label>
+          </div>
+          <div className={styles.docBoard}>
+            {concept.visual.characterImagePrompts.map((prompt, index) => {
+              const st = images[`concept-char:${index}`]; const busy = imageLoading === `concept-char:${index}`;
+              const label = concept.visual.characters[index]?.split(/[—\-:]/)[0]?.trim() || `캐릭터 ${index + 1}`;
+              return <figure key={`c${index}`} className={styles.docCard}>
+                <div className={styles.docThumb}>{st?.url ? /* eslint-disable-next-line @next/next/no-img-element */ <img src={st.url} alt={label} /> : <div className={styles.docPlaceholder}>{busy ? "생성 중…" : "이미지 미생성"}</div>}</div>
+                <figcaption><b>{label}</b><span className={styles.docTag}>CHARACTER</span></figcaption>
+                <p className={styles.docPrompt}>{prompt}</p>
+                <div className={styles.docActions}>
+                  <button disabled={!!imageLoading} onClick={() => generateImage(prompt, "character", index, "concept-char")}>{busy ? "생성 중…" : st?.url ? "다시 생성" : "이미지 생성"}</button>
+                  {st?.url && <a href={st.url} download={`character-${index + 1}.png`}>PNG</a>}
+                </div>
+                {st?.error && <p className={styles.imageError}>{st.error}</p>}
+              </figure>;
+            })}
+            {concept.visual.environmentImagePrompts.map((prompt, index) => {
+              const st = images[`concept-env:${index}`]; const busy = imageLoading === `concept-env:${index}`;
+              const label = concept.visual.environments[index]?.split(/[—\-:]/)[0]?.trim() || `배경 ${index + 1}`;
+              return <figure key={`e${index}`} className={styles.docCard}>
+                <div className={`${styles.docThumb} ${styles.docThumbWide}`}>{st?.url ? /* eslint-disable-next-line @next/next/no-img-element */ <img src={st.url} alt={label} /> : <div className={styles.docPlaceholder}>{busy ? "생성 중…" : "이미지 미생성"}</div>}</div>
+                <figcaption><b>{label}</b><span className={styles.docTag}>ENVIRONMENT</span></figcaption>
+                <p className={styles.docPrompt}>{prompt}</p>
+                <div className={styles.docActions}>
+                  <button disabled={!!imageLoading} onClick={() => generateImage(prompt, "environment", index, "concept-env")}>{busy ? "생성 중…" : st?.url ? "다시 생성" : "이미지 생성"}</button>
+                  {st?.url && <a href={st.url} download={`environment-${index + 1}.png`}>PNG</a>}
+                </div>
+                {st?.error && <p className={styles.imageError}>{st.error}</p>}
+              </figure>;
+            })}
+          </div>
         </div>
         <div className={styles.reviewBlock}><div><small>REVIEW QUESTIONS</small><ul>{concept.reviewQuestions.map((question) => <li key={question}>{question}</li>)}</ul></div><label>내 피드백<textarea placeholder="예: 캐릭터는 더 코믹하게, 배경은 오락실 내부로, 전투는 버튼 2개로 단순화해줘." value={feedback} disabled={!!loading} onChange={(event) => setFeedback(event.target.value)} /></label></div>
         <div className={styles.conceptActions}><button disabled={!!loading || !feedback.trim()} onClick={() => callBedrock("concept")}>피드백 반영해 기획안 다시 만들기</button><button className={styles.cta} disabled={!!loading} onClick={() => callBedrock("goals")}>{loading === "goals" ? "Goal 생성 중…" : "이 기획안 확정 · Build Goal 생성"}</button></div>
