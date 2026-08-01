@@ -875,15 +875,21 @@ class SnowApp {
 
   // ---- input (pointer lock FPS) ---------------------------------------------
   _bindInput() {
+    // Use e.code (physical key) — e.key breaks under Korean/other IME because
+    // KeyW arrives as 'ㅈ'. e.code is layout/IME independent.
     window.addEventListener('keydown', (e) => {
-      this.keys[e.key.toLowerCase()] = true;
-      if (e.key === ' ' && this.scene === 'result') { e.preventDefault(); this.newGame(); }
-      if ((e.key === 'e' || e.key === 'E') && this.scene === 'play') this._tryCraft();
-      if ((e.key === 'q' || e.key === 'Q') && this.scene === 'play') this._act('wall');
-      if ((e.key === 'f' || e.key === 'F') && this.scene === 'play') this._act('decoy');
-      if (e.key === 'm' || e.key === 'M') this._showMinimap = !this._showMinimap;
+      this.keys[e.code] = true;
+      if (e.code === 'Space' && this.scene === 'result') { e.preventDefault(); this.newGame(); }
+      if (this.scene === 'play') {
+        if (e.code === 'KeyE') this._tryCraft();
+        if (e.code === 'KeyQ') this._act('wall');
+        if (e.code === 'KeyF') this._act('decoy');
+        if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space'].includes(e.code)) e.preventDefault();
+      }
+      if (e.code === 'KeyM') this._showMinimap = !this._showMinimap;
     });
-    window.addEventListener('keyup', (e) => { this.keys[e.key.toLowerCase()] = false; });
+    window.addEventListener('keyup', (e) => { this.keys[e.code] = false; });
+    window.addEventListener('blur', () => { this.keys = {}; this.mouse.down = false; });
 
     // pointer lock lifecycle
     document.addEventListener('pointerlockchange', () => {
@@ -967,9 +973,11 @@ class SnowApp {
     // view-relative WASD
     if (h.alive && !h.crafting) {
       let f = 0, r = 0;
-      if (this.keys['w']) f += 1; if (this.keys['s']) f -= 1;
-      if (this.keys['d']) r += 1; if (this.keys['a']) r -= 1;
-      h.cover = !!this.keys['c'];
+      if (this.keys['KeyW'] || this.keys['ArrowUp']) f += 1;
+      if (this.keys['KeyS'] || this.keys['ArrowDown']) f -= 1;
+      if (this.keys['KeyD'] || this.keys['ArrowRight']) r += 1;
+      if (this.keys['KeyA'] || this.keys['ArrowLeft']) r -= 1;
+      h.cover = !!this.keys['KeyC'];
       if (f || r) {
         const cos = Math.cos(this.yaw), sin = Math.sin(this.yaw);
         const mvx = cos * f + (-sin) * r * -1; // right = (−sin? see note) — derive: right vector = (−sinθ, cosθ)... careful below
@@ -1252,10 +1260,34 @@ class SnowApp {
       ctx.fillStyle = `rgba(255,107,53,${alpha})`;
       ctx.beginPath(); ctx.arc(it.sx + hpx * 0.06, it.sy - hpx * 0.62, hpx * 0.045, 0, Math.PI * 2); ctx.fill(); // carrot
     } else if (it.kind === 'snowball') {
-      const r = Math.max(2, (5 / it.depth) * this.focal);
+      if (it.depth < 16) { ctx.globalAlpha = 1; return; } // too close = just left the hand
+      const r = Math.min(22, Math.max(3.5, (9 / it.depth) * this.focal));
+      const sb = it.ref;
+      // motion trail: project a point slightly behind along its path
+      const bx = sb.x - sb.dirX * 26, by = sb.y - sb.dirY * 26;
+      const t = sb.range > 0 ? sb.traveled / sb.range : 0;
+      const apex = Math.min(70, sb.range * 0.18);
+      const zNow = Math.max(0, 4 * apex * t * (1 - t)) + 14;
+      const back = this._project(bx, by, zNow);
+      if (back) {
+        const grad = ctx.createLinearGradient(back.sx, back.sy, it.sx, it.sy);
+        grad.addColorStop(0, 'rgba(255,255,255,0)');
+        grad.addColorStop(1, `rgba(255,255,255,${0.75 * alpha})`);
+        ctx.strokeStyle = grad; ctx.lineWidth = Math.max(2, r * 0.8); ctx.lineCap = 'round';
+        ctx.beginPath(); ctx.moveTo(back.sx, back.sy); ctx.lineTo(it.sx, it.sy); ctx.stroke();
+        ctx.lineCap = 'butt';
+      }
+      // dark outline ring so it reads against white snow
       ctx.fillStyle = `rgba(255,255,255,${alpha})`;
-      ctx.strokeStyle = `rgba(160,195,220,${alpha})`;
+      ctx.strokeStyle = `rgba(50,80,120,${0.9 * alpha})`;
+      ctx.lineWidth = 2;
       ctx.beginPath(); ctx.arc(it.sx, it.sy, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      // ground shadow for depth reading
+      const ground = this._project(sb.x, sb.y, 0);
+      if (ground) {
+        ctx.fillStyle = `rgba(60,80,110,${0.3 * alpha})`;
+        ctx.beginPath(); ctx.ellipse(ground.sx, ground.sy, r * 0.9, r * 0.35, 0, 0, Math.PI * 2); ctx.fill();
+      }
     }
     ctx.globalAlpha = 1;
   }
