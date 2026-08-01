@@ -996,3 +996,28 @@
 .docActions button:disabled { opacity: 0.45; cursor: not-allowed; }
 .docActions a { font: 11px monospace; color: #63d49c; text-decoration: none; }
 .docActions a:hover { text-decoration: underline; }
+
+/* --- batch image generation --- */
+.designDocTools { display: flex; align-items: center; gap: 12px; }
+.batchButton {
+  border: 0;
+  background: #63d49c;
+  color: #08140f;
+  font-weight: 700;
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.batchButton:hover:not(:disabled) { background: #7ee3b0; }
+.batchButton:disabled { opacity: 0.45; cursor: not-allowed; }
+.batchStatus {
+  margin: 10px 0 0;
+  color: #63d49c;
+  font: 11px monospace;
+  border: 1px solid #63d49c44;
+  background: #08140f;
+  border-radius: 6px;
+  padding: 8px 11px;
+}

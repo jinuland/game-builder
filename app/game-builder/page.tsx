@@ -77,6 +77,7 @@ export default function OntologyBuilder() {
   // Generated images keyed by prompt (dataUrl or error), plus per-prompt loading flag.
   const [images, setImages] = useState<Record<string, { url?: string; error?: string; model?: string }>>({});
   const [imageLoading, setImageLoading] = useState<string | null>(null);
+  const [batchGenerating, setBatchGenerating] = useState(false);
   const [imageModel, setImageModel] = useState("stable-core");
   // Interactive story refinement chat.
   const [chat, setChat] = useState<{ role: "user" | "assistant"; content: string }[]>([]);
@@ -182,11 +183,9 @@ export default function OntologyBuilder() {
 
   // Generate a single image from a prompt via the Bedrock key. `key` namespaces
   // the result (e.g. "concept-char:0", "character:1") so different boards don't collide.
-  const generateImage = async (prompt: string, kind: "character" | "environment", index: number, keyPrefix: string = kind) => {
-    const key = `${keyPrefix}:${index}`;
-    if (imageLoading) { setStatus("다른 이미지를 생성 중입니다. 완료 후 다시 시도하세요."); return; }
+  // Core single-image generation. Returns true on success. Sets per-key state.
+  const runImageGen = async (prompt: string, kind: "character" | "environment", key: string) => {
     setImageLoading(key);
-    setStatus(`${kind === "character" ? "캐릭터" : "배경"} 이미지를 생성하고 있습니다… (Bedrock)`);
     try {
       const aspectRatio = kind === "character" ? "2:3" : "16:9";
       const response = await fetch("/api/ontology/image", {
@@ -197,13 +196,36 @@ export default function OntologyBuilder() {
       const data = await response.json() as { image?: string; model?: string; error?: string };
       if (!response.ok || !data.image) throw new Error(data.error ?? "이미지를 받지 못했습니다.");
       setImages((current) => ({ ...current, [key]: { url: data.image, model: data.model } }));
-      setStatus(`이미지 생성 완료 (${data.model ?? "Bedrock"}).`);
+      return true;
     } catch (error) {
       const message = error instanceof DOMException && error.name === "TimeoutError"
         ? "이미지 생성이 제한 시간을 초과했습니다." : error instanceof Error ? error.message : "이미지 생성 실패";
       setImages((current) => ({ ...current, [key]: { error: message } }));
-      setStatus(message);
+      return false;
     } finally { setImageLoading(null); }
+  };
+
+  const generateImage = async (prompt: string, kind: "character" | "environment", index: number, keyPrefix: string = kind) => {
+    if (imageLoading || batchGenerating) { setStatus("다른 이미지를 생성 중입니다. 완료 후 다시 시도하세요."); return; }
+    setStatus(`${kind === "character" ? "캐릭터" : "배경"} 이미지를 생성하고 있습니다… (Bedrock)`);
+    const ok = await runImageGen(prompt, kind, `${keyPrefix}:${index}`);
+    if (ok) setStatus("이미지 생성 완료.");
+  };
+
+  // Batch: generate every prompt in a section sequentially (Bedrock rate-limits
+  // concurrent calls, so one at a time). `specs` = [{prompt, kind, key}].
+  const generateAllImages = async (specs: { prompt: string; kind: "character" | "environment"; key: string }[]) => {
+    if (imageLoading || batchGenerating) return;
+    setBatchGenerating(true);
+    let done = 0;
+    for (const spec of specs) {
+      setStatus(`이미지 일괄 생성 중… (${done + 1}/${specs.length})`);
+      // eslint-disable-next-line no-await-in-loop
+      await runImageGen(spec.prompt, spec.kind, spec.key);
+      done++;
+    }
+    setBatchGenerating(false);
+    setStatus(`이미지 ${specs.length}개 일괄 생성 완료.`);
   };
 
   // Interactive: apply a chat instruction to the current story via the refine action.
@@ -382,14 +404,21 @@ export default function OntologyBuilder() {
         <div className={styles.designDoc}>
           <div className={styles.designDocHead}>
             <div><small>DESIGN DOC · 비주얼 보드</small><h3>실제 이미지로 보는 캐릭터 · 배경</h3></div>
-            <label className={styles.designDocModel}>모델
-              <select value={imageModel} disabled={!!imageLoading} onChange={(event) => setImageModel(event.target.value)}>
-                <option value="stable-core">Stable Image Core</option>
-                <option value="stable-ultra">Stable Image Ultra</option>
-                <option value="sd3.5-large">SD 3.5 Large</option>
-              </select>
-            </label>
+            <div className={styles.designDocTools}>
+              <label className={styles.designDocModel}>모델
+                <select value={imageModel} disabled={!!imageLoading || batchGenerating} onChange={(event) => setImageModel(event.target.value)}>
+                  <option value="stable-core">Stable Image Core</option>
+                  <option value="stable-ultra">Stable Image Ultra</option>
+                  <option value="sd3.5-large">SD 3.5 Large</option>
+                </select>
+              </label>
+              <button className={styles.batchButton} disabled={!!imageLoading || batchGenerating} onClick={() => generateAllImages([
+                ...concept.visual.characterImagePrompts.map((prompt, index) => ({ prompt, kind: "character" as const, key: `concept-char:${index}` })),
+                ...concept.visual.environmentImagePrompts.map((prompt, index) => ({ prompt, kind: "environment" as const, key: `concept-env:${index}` })),
+              ])}>{batchGenerating ? "일괄 생성 중…" : "⚡ 모두 생성"}</button>
+            </div>
           </div>
+          {batchGenerating && <p className={styles.batchStatus}>{status}</p>}
           <div className={styles.docBoard}>
             {concept.visual.characterImagePrompts.map((prompt, index) => {
               const st = images[`concept-char:${index}`]; const busy = imageLoading === `concept-char:${index}`;
@@ -399,7 +428,7 @@ export default function OntologyBuilder() {
                 <figcaption><b>{label}</b><span className={styles.docTag}>CHARACTER</span></figcaption>
                 <p className={styles.docPrompt}>{prompt}</p>
                 <div className={styles.docActions}>
-                  <button disabled={!!imageLoading} onClick={() => generateImage(prompt, "character", index, "concept-char")}>{busy ? "생성 중…" : st?.url ? "다시 생성" : "이미지 생성"}</button>
+                  <button disabled={!!imageLoading || batchGenerating} onClick={() => generateImage(prompt, "character", index, "concept-char")}>{busy ? "생성 중…" : st?.url ? "다시 생성" : "이미지 생성"}</button>
                   {st?.url && <a href={st.url} download={`character-${index + 1}.png`}>PNG</a>}
                 </div>
                 {st?.error && <p className={styles.imageError}>{st.error}</p>}
@@ -413,7 +442,7 @@ export default function OntologyBuilder() {
                 <figcaption><b>{label}</b><span className={styles.docTag}>ENVIRONMENT</span></figcaption>
                 <p className={styles.docPrompt}>{prompt}</p>
                 <div className={styles.docActions}>
-                  <button disabled={!!imageLoading} onClick={() => generateImage(prompt, "environment", index, "concept-env")}>{busy ? "생성 중…" : st?.url ? "다시 생성" : "이미지 생성"}</button>
+                  <button disabled={!!imageLoading || batchGenerating} onClick={() => generateImage(prompt, "environment", index, "concept-env")}>{busy ? "생성 중…" : st?.url ? "다시 생성" : "이미지 생성"}</button>
                   {st?.url && <a href={st.url} download={`environment-${index + 1}.png`}>PNG</a>}
                 </div>
                 {st?.error && <p className={styles.imageError}>{st.error}</p>}
@@ -422,7 +451,8 @@ export default function OntologyBuilder() {
           </div>
         </div>
         <div className={styles.reviewBlock}><div><small>REVIEW QUESTIONS</small><ul>{concept.reviewQuestions.map((question) => <li key={question}>{question}</li>)}</ul></div><label>내 피드백<textarea placeholder="예: 캐릭터는 더 코믹하게, 배경은 오락실 내부로, 전투는 버튼 2개로 단순화해줘." value={feedback} disabled={!!loading} onChange={(event) => setFeedback(event.target.value)} /></label></div>
-        <div className={styles.conceptActions}><button disabled={!!loading || !feedback.trim()} onClick={() => callBedrock("concept")}>피드백 반영해 기획안 다시 만들기</button><button className={styles.cta} disabled={!!loading} onClick={() => callBedrock("goals")}>{loading === "goals" ? "Goal 생성 중…" : "이 기획안 확정 · Build Goal 생성"}</button></div>
+        <div className={styles.conceptActions}><button disabled={!!loading || !feedback.trim()} onClick={() => callBedrock("concept")}>{loading === "concept" ? "기획안 다시 만드는 중…" : "피드백 반영해 기획안 다시 만들기"}</button><button className={styles.cta} disabled={!!loading} onClick={() => callBedrock("goals")}>{loading === "goals" ? "Goal 생성 중…" : "이 기획안 확정 · Build Goal 생성"}</button></div>
+        {loading === "concept" && <div className={styles.jobStatus}><b>● 피드백을 반영해 기획안을 다시 만들고 있습니다</b><span>경과 {elapsed}초 · 내용이 복잡하면 최대 3~5분 걸릴 수 있어요</span><small>완료되면 위 기획안이 자동으로 갱신됩니다. 이 페이지를 유지해주세요.</small></div>}
         {loading === "goals" && <div className={styles.jobStatus}><b>● 확정 기획안으로 Build Goal 생성 중</b><span>경과 {elapsed}초</span><small>기획안·밸런스·이미지 제작·재미 반복 검증 계약을 통합합니다.</small></div>}
         {!loading && status && <p className={styles.notice}>{status}</p>}
       </>}
@@ -447,14 +477,19 @@ export default function OntologyBuilder() {
           <article><small>IMAGE MODEL PRODUCTION</small><p>{goals.imageGenerationPlan.modelWorkflow}</p>
             <div className={styles.imageToolbar}>
               <label>이미지 모델
-                <select value={imageModel} onChange={(event) => setImageModel(event.target.value)}>
+                <select value={imageModel} disabled={!!imageLoading || batchGenerating} onChange={(event) => setImageModel(event.target.value)}>
                   <option value="stable-core">Stable Image Core (빠름·기본)</option>
                   <option value="stable-ultra">Stable Image Ultra (고품질)</option>
                   <option value="sd3.5-large">SD 3.5 Large</option>
                 </select>
               </label>
+              <button className={styles.batchButton} disabled={!!imageLoading || batchGenerating} onClick={() => generateAllImages([
+                ...goals.imageGenerationPlan.characterPrompts.map((prompt, index) => ({ prompt, kind: "character" as const, key: `character:${index}` })),
+                ...goals.imageGenerationPlan.environmentPrompts.map((prompt, index) => ({ prompt, kind: "environment" as const, key: `environment:${index}` })),
+              ])}>{batchGenerating ? "일괄 생성 중…" : "⚡ 모두 생성"}</button>
               <span className={styles.imageHint}>Bedrock API key(.env.local)로 브라우저에서 바로 생성됩니다.</span>
             </div>
+            {batchGenerating && <p className={styles.batchStatus}>{status}</p>}
             <b>CHARACTER PROMPTS</b>
             <ol>{goals.imageGenerationPlan.characterPrompts.map((item, index) => {
               const state = images[`character:${index}`];
@@ -462,7 +497,7 @@ export default function OntologyBuilder() {
               return (
                 <li key={index}>
                   <p className={styles.promptText}>{item}</p>
-                  <button type="button" className={styles.imageButton} disabled={Boolean(imageLoading)} onClick={() => generateImage(item, "character", index)}>{busy ? "생성 중…" : state?.url ? "다시 생성" : "이미지 생성"}</button>
+                  <button type="button" className={styles.imageButton} disabled={Boolean(imageLoading) || batchGenerating} onClick={() => generateImage(item, "character", index)}>{busy ? "생성 중…" : state?.url ? "다시 생성" : "이미지 생성"}</button>
                   {state?.url && <div className={styles.imageResult}><img src={state.url} alt={`character ${index + 1}`} /><a href={state.url} download={`character-${index + 1}.png`}>PNG 다운로드</a></div>}
                   {state?.error && <p className={styles.imageError}>{state.error}</p>}
                 </li>
@@ -475,7 +510,7 @@ export default function OntologyBuilder() {
               return (
                 <li key={index}>
                   <p className={styles.promptText}>{item}</p>
-                  <button type="button" className={styles.imageButton} disabled={Boolean(imageLoading)} onClick={() => generateImage(item, "environment", index)}>{busy ? "생성 중…" : state?.url ? "다시 생성" : "이미지 생성"}</button>
+                  <button type="button" className={styles.imageButton} disabled={Boolean(imageLoading) || batchGenerating} onClick={() => generateImage(item, "environment", index)}>{busy ? "생성 중…" : state?.url ? "다시 생성" : "이미지 생성"}</button>
                   {state?.url && <div className={styles.imageResult}><img src={state.url} alt={`environment ${index + 1}`} /><a href={state.url} download={`environment-${index + 1}.png`}>PNG 다운로드</a></div>}
                   {state?.error && <p className={styles.imageError}>{state.error}</p>}
                 </li>
