@@ -32,6 +32,8 @@ export function createGame(seed = 42, opts = {}) {
   };
   spawnPiles(g);
   spawnObstacles(g);
+  spawnPads(g);
+  spawnTowers(g);
   spawnPickups(g);
   spawnPlayers(g, opts);
   applyClass(g, humanPlayer(g), opts.classId);
@@ -48,8 +50,44 @@ function spawnPickups(g) {
     g.pickups.push({ id: uid(), kind: 'shield', x: g.rng.range(80, m - 80), y: g.rng.range(80, m - 80), takenUntil: 0 });
   }
   for (let i = 0; i < C.items.pill.spawn; i++) {
-    g.pickups.push({ id: uid(), kind: 'pill', x: g.rng.range(80, m - 80), y: g.rng.range(80, m - 80), takenUntil: 0 });
+    // buff decided at spawn so the capsule color tells you what it is
+    g.pickups.push({ id: uid(), kind: 'pill', x: g.rng.range(80, m - 80), y: g.rng.range(80, m - 80), takenUntil: 0, buff: null });
   }
+  for (const it of g.pickups) if (it.kind === 'pill') it.buff = rollPillBuff(g);
+}
+
+// Spring jump pads: step on one → big vertical launch that carries your
+// current run direction (Fortnite-style). NPC-sized springs.
+function spawnPads(g) {
+  const m = C.map.size;
+  g.pads = [];
+  for (let i = 0; i < C.pads.count; i++) {
+    g.pads.push({ id: uid(), x: g.rng.range(140, m - 140), y: g.rng.range(140, m - 140), r: C.pads.radius });
+  }
+}
+
+// One-story rock towers you can land on (via jump pads) and walk across.
+function spawnTowers(g) {
+  const m = C.map.size;
+  g.towers = [];
+  for (let i = 0; i < C.towers.count; i++) {
+    g.towers.push({ id: uid(), x: g.rng.range(160, m - 160), y: g.rng.range(160, m - 160), r: C.towers.radius, h: C.towers.height });
+  }
+  // pair most towers with a nearby pad so they're actually reachable
+  for (let i = 0; i < Math.min(g.pads.length, g.towers.length); i++) {
+    const tw = g.towers[i];
+    const a = g.rng.range(0, Math.PI * 2);
+    g.pads[i].x = Math.max(60, Math.min(m - 60, tw.x + Math.cos(a) * (tw.r + 34)));
+    g.pads[i].y = Math.max(60, Math.min(m - 60, tw.y + Math.sin(a) * (tw.r + 34)));
+  }
+}
+
+// Height of the walkable ground at (x,y): tower tops are elevated terrain.
+export function groundHeightAt(g, x, y) {
+  for (const tw of g.towers || []) {
+    if (Math.hypot(tw.x - x, tw.y - y) <= tw.r) return tw.h;
+  }
+  return 0;
 }
 
 // Roll a pill buff. Machine gun is the jackpot; the rest are timed multipliers.
@@ -135,9 +173,10 @@ export function tryPickup(g, p) {
       return 'shield';
     }
     if (it.kind === 'pill') {
-      const buff = applyPillBuff(g, p, rollPillBuff(g));
+      const buff = applyPillBuff(g, p, it.buff || rollPillBuff(g));
       it.takenUntil = g.t + C.items.pill.respawnSec;
       it.x = g.rng.range(80, C.map.size - 80); it.y = g.rng.range(80, C.map.size - 80);
+      it.buff = rollPillBuff(g); // next spawn gets a fresh roll (color updates too)
       return { kind: 'pill', buff };
     }
   }
@@ -199,7 +238,9 @@ function spawnPlayers(g, opts) {
       cover: false,
       walls: 0, decoys: 0,
       maxHp: C.player.maxHp, shieldHits: 0,
-      z: 0, vz: 0,             // jump height / vertical velocity
+      z: 0, vz: 0,             // height / vertical velocity
+      mvx: 0, mvy: 0,          // last move direction (for pad launch carry)
+      padVx: 0, padVy: 0,      // airborne carry velocity from a jump pad
       mods: { throwRange: 1, damage: 1, speed: 1, craftSec: 1 },
       npc: isHuman ? null : { state: 'PATROL', target: null, reactTimer: 0, moveTx: 0, moveTy: 0, wantCraft: false, aimError: 0 },
       diff: g.difficulty,
@@ -236,9 +277,10 @@ export function addSnowballs(p, n) { p.snowballs = Math.max(0, p.snowballs + n);
 // jump: only from the ground, not while crafting. Airborne players above
 // jumpDodgeZ dodge incoming snowballs (they fly under you).
 export function jump(g, p) {
-  if (!p.alive || p.crafting || p.z > 0.01) return false;
+  const groundH = groundHeightAt(g, p.x, p.y);
+  if (!p.alive || p.crafting || p.z > groundH + 0.01) return false;
   p.vz = C.player.jumpVel;
-  p.z = 0.011; // leave the ground immediately so a same-tick double jump is impossible
+  p.z = groundH + 0.011; // leave the ground immediately so a same-tick double jump is impossible
   g.events.push({ t: g.t, type: 'jump', id: p.id });
   return true;
 }
@@ -410,11 +452,34 @@ export function step(g, dt) {
   // players
   for (const p of g.players) {
     if (!p.alive) continue;
-    // jump physics: simple ballistic arc back to the ground
-    if (p.z > 0 || p.vz !== 0) {
+    // terrain-aware jump/fall physics: tower tops are elevated ground
+    const groundH = groundHeightAt(g, p.x, p.y);
+    if (p.z > groundH + 0.001 || p.vz !== 0) {
       p.vz -= C.player.gravity * dt;
-      p.z = Math.max(0, p.z + p.vz * dt);
-      if (p.z === 0 && p.vz < 0) p.vz = 0;
+      p.z += p.vz * dt;
+      // pad launch carries your run direction through the air (Fortnite-style)
+      if (p.padVx || p.padVy) {
+        p.x = Math.max(0, Math.min(C.map.size, p.x + p.padVx * dt));
+        p.y = Math.max(0, Math.min(C.map.size, p.y + p.padVy * dt));
+      }
+      const landH = groundHeightAt(g, p.x, p.y);
+      if (p.z <= landH && p.vz < 0) { p.z = landH; p.vz = 0; p.padVx = 0; p.padVy = 0; }
+    } else if (p.z !== groundH) {
+      p.z = groundH; // stepping between ground levels while walking
+    }
+    // spring jump pads: standing on one launches you up + forward
+    if (p.alive && p.z <= groundH + 0.1 && p.vz === 0) {
+      for (const pad of g.pads) {
+        if (Math.hypot(pad.x - p.x, pad.y - p.y) > pad.r) continue;
+        if (p.crafting) cancelCraft(g, p, 'pad');
+        p.vz = C.pads.launchVel;
+        p.z = groundH + 0.02;
+        const ml = Math.hypot(p.mvx || 0, p.mvy || 0);
+        p.padVx = ml > 0.01 ? (p.mvx / ml) * C.player.speed * C.pads.carryMul : 0;
+        p.padVy = ml > 0.01 ? (p.mvy / ml) * C.player.speed * C.pads.carryMul : 0;
+        g.events.push({ t: g.t, type: 'pad', id: p.id });
+        break;
+      }
     }
     // machine gun cooldown tick + expiry
     if (p.mg) {
@@ -470,10 +535,10 @@ export function step(g, dt) {
       if (Math.hypot(d.x - nx, d.y - ny) < 14) { d.alive = false; hitDecoy = true; break; }
     }
     if (hitDecoy) { sb.dead = true; continue; }
-    // player collision (airborne players above dodge height are missed)
+    // player collision (players airborne above their local ground are missed)
     for (const p of g.players) {
       if (!p.alive || p.id === sb.ownerId) continue;
-      if (p.z > C.player.jumpDodgeZ) continue;
+      if (p.z - groundHeightAt(g, p.x, p.y) > C.player.jumpDodgeZ) continue;
       if (Math.hypot(p.x - nx, p.y - ny) < C.player.radius + C.throw.radius) {
         const dealt = damage(g, p, C.throw.damage * (sb.dmgMul || 1), sb.ownerId);
         if (dealt > 0) { g.stats.hits++; g.kills[sb.ownerId] = (g.kills[sb.ownerId] || 0); }
@@ -509,16 +574,27 @@ export function step(g, dt) {
 // ---- player movement (called by input/NPC) ------------------------------
 export function movePlayer(g, p, mvx, mvy, dt) {
   if (!p.alive || p.crafting) return;
+  const len0 = Math.hypot(mvx, mvy) || 1;
+  p.mvx = mvx / len0; p.mvy = mvy / len0; // remember run direction for pad launches
   const spd = C.player.speed * ((p.mods && p.mods.speed) || 1) * buffMul(g, p, 'speed') * (p.cover ? C.player.coverSpeedMul : 1) * dt;
-  const len = Math.hypot(mvx, mvy) || 1;
-  let nx = Math.max(0, Math.min(C.map.size, p.x + (mvx / len) * spd));
-  let ny = Math.max(0, Math.min(C.map.size, p.y + (mvy / len) * spd));
-  // obstacle collision: push out of solid circles (slide along)
-  for (const o of g.obstacles) {
-    const min = o.r + C.player.radius * 0.6;
-    const dx = nx - o.x, dy = ny - o.y;
-    const d = Math.hypot(dx, dy);
-    if (d < min && d > 0.001) { nx = o.x + (dx / d) * min; ny = o.y + (dy / d) * min; }
+  let nx = Math.max(0, Math.min(C.map.size, p.x + p.mvx * spd));
+  let ny = Math.max(0, Math.min(C.map.size, p.y + p.mvy * spd));
+  // obstacle collision: push out of solid circles (slide along).
+  // Skip while airborne above them, and never let a push-out teleport the
+  // player through/backwards past the zone edge (was making the storm ring
+  // feel impassable when an obstacle straddled it).
+  if (p.z <= 2) {
+    for (const o of g.obstacles) {
+      const min = o.r + C.player.radius * 0.6;
+      const dx = nx - o.x, dy = ny - o.y;
+      const d = Math.hypot(dx, dy);
+      if (d < min && d > 0.001) {
+        const px = o.x + (dx / d) * min, py = o.y + (dy / d) * min;
+        // if the push-out would move us further than one step, stay put instead
+        if (Math.hypot(px - p.x, py - p.y) <= spd * 2 + 2) { nx = px; ny = py; }
+        else { nx = p.x; ny = p.y; }
+      }
+    }
   }
   p.x = Math.max(0, Math.min(C.map.size, nx));
   p.y = Math.max(0, Math.min(C.map.size, ny));
@@ -531,14 +607,50 @@ export function npcThink(g, p, dt) {
   const ai = p.npc;
   ai.reactTimer -= dt;
 
-  // zone safety first
+  // zone safety first — head for a personal spot inside the zone, not the
+  // exact center (everyone aiming at cx,cy was the "bots pile up" bug)
   const distCenter = Math.hypot(p.x - g.zone.cx, p.y - g.zone.cy);
   if (distCenter > g.zone.radius * 0.97) {
     if (p.crafting) cancelCraft(g, p, 'zone');
-    const ang = Math.atan2(g.zone.cy - p.y, g.zone.cx - p.x);
+    if (!ai.zoneAng) ai.zoneAng = g.rng.range(0, Math.PI * 2);
+    const zr = g.zone.radius * (0.35 + (p.id % 7) * 0.08);
+    const zx = g.zone.cx + Math.cos(ai.zoneAng) * zr;
+    const zy = g.zone.cy + Math.sin(ai.zoneAng) * zr;
+    const ang = Math.atan2(zy - p.y, zx - p.x);
     movePlayer(g, p, Math.cos(ang), Math.sin(ang), dt);
     ai.state = 'ZONE_MOVE';
     return;
+  }
+  // separation: shove away from a bot standing on top of us so groups spread out
+  for (const o of g.players) {
+    if (!o.alive || o.id === p.id || !o.isNpc) continue;
+    const d = Math.hypot(o.x - p.x, o.y - p.y);
+    if (d < 26 && d > 0.001) {
+      movePlayer(g, p, (p.x - o.x) / d, (p.y - o.y) / d, dt * 0.7);
+      break;
+    }
+  }
+
+  // stuck detection: if we tried to move but barely displaced (pinned on an
+  // obstacle/wall), steer along a detour heading for a moment instead
+  if (ai.detourUntil > g.t) {
+    movePlayer(g, p, Math.cos(ai.detourAng), Math.sin(ai.detourAng), dt);
+    ai.state = 'DETOUR';
+    return;
+  }
+  if (ai.stuckCheckAt == null) {
+    // first pass only records the baseline — never judge without history
+    ai.lastX = p.x; ai.lastY = p.y; ai.stuckCheckAt = g.t;
+  } else if (g.t - ai.stuckCheckAt > 0.6) {
+    const moved = Math.hypot(p.x - ai.lastX, p.y - ai.lastY);
+    const wasMoving = ['PATROL', 'SEEK_PILE', 'SEEK_ITEM', 'ZONE_MOVE', 'HUNT', 'RETREAT'].includes(ai.state);
+    if (wasMoving && moved < 4) {
+      // pick a sideways escape (rotate ±90~150° from current heading)
+      const base = Math.atan2((ai.moveTy || p.y) - p.y, (ai.moveTx || p.x) - p.x);
+      ai.detourAng = base + (g.rng() < 0.5 ? 1 : -1) * g.rng.range(Math.PI / 2, Math.PI * 0.83);
+      ai.detourUntil = g.t + 0.9;
+    }
+    ai.lastX = p.x; ai.lastY = p.y; ai.stuckCheckAt = g.t;
   }
 
   // warmup: no attacking human in first warmupSec
@@ -559,9 +671,9 @@ export function npcThink(g, p, dt) {
     }
   }
 
-  // smart item seeking: go for a heal when hurt, a shield/pill opportunistically
-  if (diff.seekItem && g.rng() < 0.02) {
-    const hurt = p.hp < (p.maxHp || 100) * 0.55;
+  // smart item seeking: go for a heal when hurt (eagerly), a shield/pill opportunistically
+  const hurt = p.hp < (p.maxHp || 100) * 0.55;
+  if (diff.seekItem && g.rng() < (hurt ? 0.2 : 0.02)) {
     let best = null, bd = 240;
     for (const it of g.pickups) {
       if (it.takenUntil > g.t) continue;
@@ -596,8 +708,11 @@ export function npcThink(g, p, dt) {
       if (!o.alive || o.id === p.id) continue;
       if (o.isHuman && !canAttackHuman) continue;
       const dd = Math.hypot(o.x - p.x, o.y - p.y);
-      if (dd < td) { td = dd; target = { x: o.x, y: o.y, ref: o }; }
+      // bias: the human reads as 35% closer, so bots prefer hunting the player
+      const scored = o.isHuman ? dd * 0.65 : dd;
+      if (scored < td) { td = scored; target = { x: o.x, y: o.y, ref: o, realD: dd }; }
     }
+    if (target && target.realD != null) td = target.realD;
   }
 
   // low/no ammo -> flee from a nearby threat first, else craft/seek pile.
@@ -622,13 +737,14 @@ export function npcThink(g, p, dt) {
     if (p.mg && p.mg.until > g.t && p.mg.ammo > 0) {
       const err = (1 - diff.accuracy) * 0.22;
       fireMachineGun(g, p, a + g.rng.range(-err, err));
-    } else if (ai.reactTimer <= 0 && g.rng() < diff.aggro) {
-      // accuracy: perturb aim by error inversely to accuracy
+    } else if (ai.reactTimer <= 0 && g.rng() < diff.aggro * (target.ref && target.ref.isHuman ? 1.8 : 1)) {
+      // accuracy: perturb aim by error inversely to accuracy.
+      // Bots press the human harder (1.8x throw rate) so fights find you.
       const err = (1 - diff.accuracy) * 0.5;
       const aimErr = g.rng.range(-err, err);
       const charge = Math.min(1, td / C.throw.maxRange);
       throwSnowball(g, p, a + aimErr, charge);
-      ai.reactTimer = diff.reactSec;
+      ai.reactTimer = diff.reactSec * (target.ref && target.ref.isHuman ? 0.75 : 1);
     }
     // smarter footwork: strafe sideways while attacking (harder to hit),
     // back off if too close, hold if mid-range
@@ -642,9 +758,22 @@ export function npcThink(g, p, dt) {
     return;
   }
 
-  // patrol toward center-ish / wander
+  // endgame hunt: with few survivors, don't wander — close in on the nearest
+  // enemy so the last 2-3 players actually find each other
+  if (target && aliveCount(g) <= 5 && p.snowballs > 0) {
+    const a = Math.atan2(target.y - p.y, target.x - p.x);
+    movePlayer(g, p, Math.cos(a), Math.sin(a), dt);
+    ai.state = 'HUNT';
+    return;
+  }
+
+  // patrol toward center-ish / wander (bias waypoints inside the zone so
+  // patrols stay relevant as the map closes)
   if (!ai.moveTx || Math.hypot(ai.moveTx - p.x, ai.moveTy - p.y) < 20) {
-    ai.moveTx = g.rng.range(0, C.map.size); ai.moveTy = g.rng.range(0, C.map.size);
+    const a2 = g.rng.range(0, Math.PI * 2);
+    const rr = g.rng.range(0, g.zone.radius * 0.9);
+    ai.moveTx = g.zone.cx + Math.cos(a2) * rr;
+    ai.moveTy = g.zone.cy + Math.sin(a2) * rr;
   }
   const a = Math.atan2(ai.moveTy - p.y, ai.moveTx - p.x);
   movePlayer(g, p, Math.cos(a), Math.sin(a), dt);
@@ -691,6 +820,7 @@ export function serialize(g) {
     difficulty: g.difficulty,
     players: g.players, snowballs: g.snowballs, walls: g.walls, decoys: g.decoys,
     piles: g.piles, obstacles: g.obstacles, corpses: g.corpses, pickups: g.pickups,
+    pads: g.pads, towers: g.towers,
     zone: g.zone, placementOrder: g.placementOrder, kills: g.kills,
     _humanId: g._humanId, stats: g.stats,
   });

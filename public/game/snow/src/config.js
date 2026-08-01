@@ -11,13 +11,17 @@ export const CONFIG = {
     healSpawn: 10, healAmount: 40, healRespawnSec: 50,   // heal packs on the map
     shieldSpawn: 6, shieldHits: 4, shieldRespawnSec: 60, // shield fully blocks the next N hits (durability), then breaks
     pickupRange: 26,
-    // pills: random buff on pickup. Small chance rolls the snow machine gun.
+    // pills: buff rolled at spawn so the capsule color telegraphs what you get.
     pill: {
       spawn: 14, respawnSec: 45, durationSec: 20,
       speedMul: 1.35, powerMul: 1.5, craftMul: 0.5,
-      mgChance: 0.18, mgAmmo: 75, mgFireInterval: 0.12, mgSpeed: 540, // straight-line rapid fire
+      mgChance: 0.3, mgAmmo: 75, mgFireInterval: 0.12, mgSpeed: 540, // straight-line rapid fire
     },
   },
+  // spring jump pads (Fortnite-style): step on → launch up + carry your run direction
+  pads: { count: 7, radius: 14, launchVel: 100, carryMul: 2.0 },
+  // climbable rock towers, one story high — reachable via jump pads
+  towers: { count: 6, radius: 22, height: 26 },
   craft: { seconds: 3, yield: 10, interactRange: 34 },
   throw: {
     minChargeMs: 200, maxChargeMs: 1500, minRange: 100, maxRange: 400,

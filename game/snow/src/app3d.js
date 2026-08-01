@@ -13,6 +13,14 @@ const EYE = 17;               // camera eye height (world units; 1200u map)
 const CHAR_SCALE = 11;        // base character size
 
 // skin palettes for low-poly figures (jacket, pants, head, accent)
+// pill capsule/beacon colors keyed by buff kind (color telegraphs the buff)
+const PILL_COLORS = {
+  mg: { a: 0xff5722, name: '기관총' },      // orange-red = jackpot
+  speed: { a: 0x3ddc84, name: '이동' },     // green
+  power: { a: 0xffd43b, name: '공격' },     // yellow
+  craft: { a: 0xb388ff, name: '제작' },     // purple
+};
+
 const PALETTES = {
   jack: { jacket: 0x1b2a4a, pants: 0x2c3550, head: 0xe8b89a, accent: 0xff6b35 },
   white: { jacket: 0xe8eef4, pants: 0xd7e2ec, head: 0xf0c6a8, accent: 0xa8d8ea },
@@ -253,40 +261,52 @@ export class SnowApp {
     this._zoneRingR = g.zone.radius;
     s.add(this.zoneRing);
 
-    // pickups: heal packs (white box + red cross) and shields (blue glowing disc)
+    // pickups: heal packs, shields, pills (colored per buff)
     this.pickupMeshes = new Map();
-    for (const it of g.pickups) {
+    for (const it of g.pickups) this._makePickupMesh(it);
+
+    // spring jump pads: coil + bright top plate (NPC-sized)
+    this.padMeshes = new Map();
+    for (const pad of g.pads || []) {
       const grp = new THREE.Group();
-      if (it.kind === 'heal') {
-        const box = new THREE.Mesh(new THREE.BoxGeometry(10, 7, 10), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6 }));
-        box.position.y = 5; grp.add(box);
-        const crossMat = new THREE.MeshBasicMaterial({ color: 0xe03131 });
-        const c1 = new THREE.Mesh(new THREE.BoxGeometry(6.4, 1.8, 1.8), crossMat); c1.position.y = 9.2; grp.add(c1);
-        const c2 = new THREE.Mesh(new THREE.BoxGeometry(1.8, 1.8, 6.4), crossMat); c2.position.y = 9.2; grp.add(c2);
-      } else if (it.kind === 'shield') {
-        const disc = new THREE.Mesh(
-          new THREE.CylinderGeometry(7, 7, 2.4, 18),
-          new THREE.MeshStandardMaterial({ color: 0x4d9fff, emissive: 0x2266cc, emissiveIntensity: 0.7, roughness: 0.3 }),
-        );
-        disc.position.y = 6; disc.rotation.x = 0.35; grp.add(disc);
-      } else { // pill: two-tone capsule, glowing so it reads as "power-up"
-        const capMatA = new THREE.MeshStandardMaterial({ color: 0xffd43b, emissive: 0xcc9900, emissiveIntensity: 0.7, roughness: 0.35 });
-        const capMatB = new THREE.MeshStandardMaterial({ color: 0xff4d6d, emissive: 0xaa1133, emissiveIntensity: 0.7, roughness: 0.35 });
-        const half1 = new THREE.Mesh(new THREE.CapsuleGeometry(4.6, 5, 6, 12), capMatA);
-        half1.rotation.z = Math.PI / 2; half1.position.set(-2.6, 9, 0); grp.add(half1);
-        const half2 = new THREE.Mesh(new THREE.CapsuleGeometry(4.6, 5, 6, 12), capMatB);
-        half2.rotation.z = Math.PI / 2; half2.position.set(2.6, 9, 0); grp.add(half2);
-      }
-      // vertical light beacon so items are findable from a distance
-      const beaconColor = it.kind === 'heal' ? 0xff6b6b : it.kind === 'shield' ? 0x4d9fff : 0xffd43b;
-      const beam = new THREE.Mesh(
-        new THREE.CylinderGeometry(1.5, 1.5, 52, 6),
-        new THREE.MeshBasicMaterial({ color: beaconColor, transparent: true, opacity: 0.34, blending: THREE.AdditiveBlending, depthWrite: false }),
+      const base = new THREE.Mesh(
+        new THREE.CylinderGeometry(pad.r, pad.r + 2, 3, 16),
+        new THREE.MeshStandardMaterial({ color: 0x37474f, roughness: 0.8 }),
       );
-      beam.position.y = 26; grp.add(beam);
-      grp.position.set(it.x, 0, it.y);
+      base.position.y = 1.5; grp.add(base);
+      // coil: stacked shrinking tori reads as a spring
+      const coilMat = new THREE.MeshStandardMaterial({ color: 0xb0bec5, metalness: 0.6, roughness: 0.4 });
+      for (let ci = 0; ci < 4; ci++) {
+        const coil = new THREE.Mesh(new THREE.TorusGeometry(pad.r * 0.55, 1.3, 6, 20), coilMat);
+        coil.rotation.x = Math.PI / 2;
+        coil.position.y = 4 + ci * 3;
+        grp.add(coil);
+      }
+      const plate = new THREE.Mesh(
+        new THREE.CylinderGeometry(pad.r * 0.8, pad.r * 0.8, 2.4, 16),
+        new THREE.MeshStandardMaterial({ color: 0x00e5ff, emissive: 0x00a5cc, emissiveIntensity: 0.8, roughness: 0.3 }),
+      );
+      plate.position.y = 17; grp.add(plate);
+      grp.userData.plate = plate;
+      grp.position.set(pad.x, 0, pad.y);
       s.add(grp);
-      this.pickupMeshes.set(it.id, grp);
+      this.padMeshes.set(pad.id, grp);
+    }
+
+    // rock towers: climbable one-story flat-top rocks
+    for (const tw of g.towers || []) {
+      const rock = new THREE.Mesh(
+        new THREE.CylinderGeometry(tw.r, tw.r * 1.25, tw.h, 9),
+        new THREE.MeshStandardMaterial({ color: 0x8d99a6, roughness: 1, flatShading: true }),
+      );
+      rock.position.set(tw.x, tw.h / 2, tw.y);
+      s.add(rock);
+      const snowTop = new THREE.Mesh(
+        new THREE.CylinderGeometry(tw.r * 0.98, tw.r * 0.9, 2.2, 9),
+        new THREE.MeshStandardMaterial({ color: 0xf4f8fb, roughness: 1, flatShading: true }),
+      );
+      snowTop.position.set(tw.x, tw.h + 1.1, tw.y);
+      s.add(snowTop);
     }
 
     // enemy HP bars: billboard sprites above each actor
@@ -314,6 +334,47 @@ export class SnowApp {
       s.add(fig);
       this.actors.set(p.id, fig);
     }
+  }
+
+  // build (or rebuild, on pill re-roll) one pickup's mesh group
+  _makePickupMesh(it) {
+    const old = this.pickupMeshes.get(it.id);
+    if (old) this.scene3.remove(old);
+    const grp = new THREE.Group();
+    if (it.kind === 'heal') {
+      const box = new THREE.Mesh(new THREE.BoxGeometry(10, 7, 10), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6 }));
+      box.position.y = 5; grp.add(box);
+      const crossMat = new THREE.MeshBasicMaterial({ color: 0xe03131 });
+      const c1 = new THREE.Mesh(new THREE.BoxGeometry(6.4, 1.8, 1.8), crossMat); c1.position.y = 9.2; grp.add(c1);
+      const c2 = new THREE.Mesh(new THREE.BoxGeometry(1.8, 1.8, 6.4), crossMat); c2.position.y = 9.2; grp.add(c2);
+    } else if (it.kind === 'shield') {
+      const disc = new THREE.Mesh(
+        new THREE.CylinderGeometry(7, 7, 2.4, 18),
+        new THREE.MeshStandardMaterial({ color: 0x4d9fff, emissive: 0x2266cc, emissiveIntensity: 0.7, roughness: 0.3 }),
+      );
+      disc.position.y = 6; disc.rotation.x = 0.35; grp.add(disc);
+    } else { // pill: capsule colored by its buff so you know what you're grabbing
+      const pc = PILL_COLORS[it.buff && it.buff.kind] || PILL_COLORS.speed;
+      const capMatA = new THREE.MeshStandardMaterial({ color: pc.a, emissive: pc.a, emissiveIntensity: 0.5, roughness: 0.35 });
+      const capMatB = new THREE.MeshStandardMaterial({ color: 0xf5f5f5, emissive: 0x999999, emissiveIntensity: 0.3, roughness: 0.35 });
+      const half1 = new THREE.Mesh(new THREE.CapsuleGeometry(4.6, 5, 6, 12), capMatA);
+      half1.rotation.z = Math.PI / 2; half1.position.set(-2.6, 9, 0); grp.add(half1);
+      const half2 = new THREE.Mesh(new THREE.CapsuleGeometry(4.6, 5, 6, 12), capMatB);
+      half2.rotation.z = Math.PI / 2; half2.position.set(2.6, 9, 0); grp.add(half2);
+      grp.userData.pillColor = pc.a;
+      grp.userData.buffKind = it.buff && it.buff.kind;
+    }
+    // vertical light beacon so items are findable from a distance
+    const beaconColor = it.kind === 'heal' ? 0xff6b6b : it.kind === 'shield' ? 0x4d9fff : (grp.userData.pillColor || 0xffd43b);
+    const beam = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.5, 1.5, 52, 6),
+      new THREE.MeshBasicMaterial({ color: beaconColor, transparent: true, opacity: 0.34, blending: THREE.AdditiveBlending, depthWrite: false }),
+    );
+    beam.position.y = 26; grp.add(beam);
+    grp.position.set(it.x, 0, it.y);
+    this.scene3.add(grp);
+    this.pickupMeshes.set(it.id, grp);
+    return grp;
   }
 
   // floating HP bar sprite for an enemy (canvas texture, camera-facing)
@@ -453,7 +514,8 @@ export class SnowApp {
       '마우스 — 시점 회전 (위로 밀면 위를 봄 · 타이틀에서 반전 가능)',
       'W A S D — 보는 방향 기준 이동 · Space — 점프(공중에서 눈뭉치 회피) · C — 엄폐(피해 절반)',
       '🛡 방패 아이템 — 들고 있는 동안 피격 완전 방어, 내구도 4회 소진 시 파괴',
-      '💊 알약 — 랜덤 버프 20초: 이동/공격/제작 증가, 낮은 확률로 눈 기관총(75발 연사)',
+      '💊 알약 — 색으로 구분: 🟢이동 🟡공격 🟣제작 🔴기관총(75발 연사, 20초)',
+      '🌀 스프링 점프 패드 — 밟으면 달리던 방향으로 높이 발사. 돌 타워 위로 올라갈 수 있음',
       '좌클릭 홀드 → 놓기 — 눈뭉치 투척 (오래 누를수록 멀리)',
       'E — 눈더미(반짝이는 흰 둔덕) 앞에서 3초 제작 +10 (무방비!)',
       'Q — 설벽 건설 (4개) · F — 눈사람 미끼 (5개) · M — 지도',
@@ -652,6 +714,7 @@ export class SnowApp {
         const by = g.players.find((p) => p.id === e.by), v = g.players.find((p) => p.id === e.victim);
         if (by && v) this.killFeed.push({ text: `${by.name} ❄→ ${v.name}`, until: performance.now() + 4200 });
       }
+      if (e.type === 'pad' && e.id === h.id) { this.audio.throw(); this._toast('🌀 스프링 점프!', 1500); }
       if (e.type === 'shieldBlock' && e.id === h.id) {
         this.shieldFlashUntil = performance.now() + 300;
         this.audio.wall();
@@ -689,7 +752,7 @@ export class SnowApp {
     // camera
     const h = this.human;
     const bob = Math.sin(this.bobT) * 0.8;
-    const eyeY = EYE + bob + (h.z || 0);   // jump raises the camera
+    const eyeY = EYE + bob + (h.z || 0);   // jump/pad/tower height raises the camera
     this.camera.position.set(h.x, eyeY, h.y);
     const lookX = h.x + Math.cos(this.yaw) * Math.cos(this.pitch) * 10;
     const lookY = eyeY + Math.sin(this.pitch) * 10;
@@ -848,17 +911,26 @@ export class SnowApp {
       }
     }
 
-    // pickups: bob + spin, hidden while on respawn cooldown
+    // pickups: bob + spin, hidden while on respawn cooldown; pills rebuild
+    // their mesh when the respawn re-rolls the buff (color must match)
     if (this.pickupMeshes) {
       for (const it of g.pickups) {
-        const m = this.pickupMeshes.get(it.id);
+        let m = this.pickupMeshes.get(it.id);
         if (!m) continue;
+        if (it.kind === 'pill' && it.buff && m.userData.buffKind !== it.buff.kind) m = this._makePickupMesh(it);
         const taken = it.takenUntil > g.t;
         m.visible = !taken;
         if (!taken) {
           m.position.set(it.x, Math.sin(now / 400 + it.id) * 1.6, it.y);
           m.rotation.y = now / 800;
         }
+      }
+    }
+    // jump pad plates pulse
+    if (this.padMeshes) {
+      for (const [, m] of this.padMeshes) {
+        const plate = m.userData.plate;
+        if (plate) plate.position.y = 17 + Math.sin(now / 260) * 1.4;
       }
     }
 

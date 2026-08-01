@@ -413,10 +413,115 @@ test('TC-035 smart NPC: hurt bot seeks a heal pack', () => {
   npc.x = 600; npc.y = 600; setHp(g, npc, 30);
   g.pickups = [{ id: 1, kind: 'heal', x: 660, y: 600, takenUntil: 0 }];
   g.snowballs = [];
+  g.piles = []; // no piles: crafting would lock the brain (test never calls step)
   let sought = false;
   for (let i = 0; i < 400 && !sought; i++) {
     npcThink(g, npc, 0.05);
     if (npc.npc.state === 'SEEK_ITEM') sought = true;
   }
   assert.ok(sought, 'NPC moved toward the heal pack');
+});
+
+import { groundHeightAt } from '../src/engine.js';
+
+test('TC-036 jump pad launches up and carries run direction; lands on tower', () => {
+  const g = createGame(1, { total: 2 });
+  const p = human(g);
+  g.towers = [{ id: 1, x: 500, y: 500, r: C.towers.radius, h: C.towers.height }];
+  g.pads = [{ id: 2, x: 440, y: 500, r: C.pads.radius }];
+  p.x = 420; p.y = 500; p.z = 0; p.vz = 0;
+  // run east onto the pad
+  let launched = false;
+  for (let i = 0; i < 300; i++) {
+    if (!launched && p.z <= 0.01) movePlayer(g, p, 1, 0, 1 / 60);
+    step(g, 1 / 60);
+    if (p.vz > 0) launched = true;
+    if (launched && p.vz <= 0 && p.z <= groundHeightAt(g, p.x, p.y) + 0.01) break;
+  }
+  assert.ok(launched, 'pad launched the player');
+  assert.ok(p.x > 445, `carried forward east (x=${p.x.toFixed(0)})`);
+  // landed on elevated terrain if over the tower
+  if (Math.hypot(p.x - 500, p.y - 500) <= C.towers.radius) {
+    assert.equal(p.z, C.towers.height, 'standing on tower top');
+  }
+});
+
+test('TC-037 tower is elevated ground: groundHeightAt + walk-off falls back to 0', () => {
+  const g = createGame(1, { total: 2 });
+  g.towers = [{ id: 1, x: 300, y: 300, r: 22, h: C.towers.height }];
+  assert.equal(groundHeightAt(g, 300, 300), C.towers.height);
+  assert.equal(groundHeightAt(g, 400, 400), 0);
+  const p = human(g);
+  p.x = 300; p.y = 300; p.z = C.towers.height; p.vz = 0;
+  // walk off the edge -> gravity brings us down to 0
+  for (let i = 0; i < 240; i++) { movePlayer(g, p, 1, 0, 1 / 60); step(g, 1 / 60); }
+  assert.equal(p.z, 0, 'fell to ground level after walking off');
+});
+
+test('TC-038 pill buff decided at spawn and re-rolled on respawn', () => {
+  const g = createGame(1, { total: 2 });
+  const pills = g.pickups.filter((i) => i.kind === 'pill');
+  assert.ok(pills.length === C.items.pill.spawn);
+  assert.ok(pills.every((i) => i.buff && i.buff.kind), 'every pill has a pre-rolled buff');
+  const p = human(g);
+  const pill = pills[0]; pill.x = p.x; pill.y = p.y;
+  const beforeKind = pill.buff.kind;
+  const got = tryPickup(g, p);
+  assert.equal(got.kind, 'pill');
+  assert.equal(got.buff.kind, beforeKind, 'received the advertised buff');
+  assert.ok(pill.buff && pill.buff.kind, 'respawn re-rolled a buff');
+});
+
+test('TC-039 NPCs prefer the human target and spread out (no pile-up)', () => {
+  const g = createGame(9, { total: 3, difficulty: 'normal' });
+  const h = human(g);
+  const npc = g.players[1], other = g.players[2];
+  // human slightly farther than the bot (and in a different direction) —
+  // the 0.65x bias should still pick the human
+  npc.x = 500; npc.y = 500;
+  h.x = 620; h.y = 500; h.alive = true;   // east, d=120
+  other.x = 500; other.y = 600;           // south, d=100 (nearer)
+  g.t = C.match.warmupSec + 1; // past warmup
+  addSnowballs(npc, 10);
+  npc.npc.reactTimer = 0;
+  const before = g.stats.throws;
+  // dt=0 freezes movement so the throw direction purely reflects target choice
+  for (let i = 0; i < 400 && g.stats.throws === before; i++) npcThink(g, npc, 0);
+  assert.ok(g.stats.throws > before, 'bot threw at someone');
+  assert.ok(Math.abs(npc.aim) < 0.1, `aim ${npc.aim.toFixed(2)} points at human (east), not the nearer bot (south)`);
+  // separation: two bots stacked apart drift apart
+  npc.x = 400; npc.y = 400; other.x = 404; other.y = 400;
+  const d0 = Math.hypot(npc.x - other.x, npc.y - other.y);
+  for (let i = 0; i < 20; i++) npcThink(g, npc, 0.05);
+  const d1 = Math.hypot(npc.x - other.x, npc.y - other.y);
+  assert.ok(d1 > d0, `separation pushed apart (${d0.toFixed(1)} -> ${d1.toFixed(1)})`);
+});
+
+test('TC-040 stuck bot detours around an obstacle instead of hugging it', () => {
+  const g = createGame(11, { total: 2, difficulty: 'normal' });
+  const npc = g.players[1];
+  npc.x = 400; npc.y = 400; npc.snowballs = 10; // ammo: no craft urge
+  g.pickups = []; g.snowballs = [];
+  // big rock directly on the patrol path
+  g.obstacles = [{ id: 1, kind: 'rock', x: 430, y: 400, r: 24, yaw: 0 }];
+  npc.npc.moveTx = 520; npc.npc.moveTy = 400; // waypoint behind the rock
+  let detoured = false;
+  for (let i = 0; i < 400; i++) {
+    npcThink(g, npc, 0.05);
+    g.t += 0.05; // advance time so stuck checks fire (no full step needed)
+    if (npc.npc.state === 'DETOUR') detoured = true;
+  }
+  assert.ok(detoured, 'stuck detection triggered a detour');
+});
+
+test('TC-041 endgame: last 2 far-apart bots hunt each other, no idle standoff', () => {
+  const g = createGame(13, { total: 2, allNpc: true, humanId: -1 });
+  const a = g.players[0], b = g.players[1];
+  a.x = 200; a.y = 200; b.x = 1000; b.y = 1000; // far beyond engageRange
+  addSnowballs(a, 10); addSnowballs(b, 10);
+  g.t = C.match.warmupSec + 1;
+  const d0 = Math.hypot(a.x - b.x, a.y - b.y);
+  for (let i = 0; i < 100; i++) { npcThink(g, a, 0.05); npcThink(g, b, 0.05); }
+  const d1 = Math.hypot(a.x - b.x, a.y - b.y);
+  assert.ok(d1 < d0 - 30, `bots closed distance (${d0.toFixed(0)} -> ${d1.toFixed(0)})`);
 });
