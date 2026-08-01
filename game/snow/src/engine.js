@@ -2,7 +2,7 @@
 // usable by both the browser render loop and the headless balance simulator.
 // All mutations flow through setters; no external `x.hp =` writes allowed.
 import { makeRng } from './rng.js';
-import { CONFIG as C, SKINS, actForSurvivors } from './config.js';
+import { CONFIG as C, SKINS, CLASSES as CLS, actForSurvivors } from './config.js';
 
 let _uid = 1;
 const uid = () => _uid++;
@@ -22,6 +22,7 @@ export function createGame(seed = 42, opts = {}) {
     piles: [],               // {x,y,cooldownUntil}
     obstacles: [],           // static cover: {x,y,r,kind:'rock'|'tree'|'cabin'} — block movement & snowballs
     corpses: [],             // fallen players: {id,x,y,skin,at} — rendered lying down, never removed
+    pickups: [],             // {id,x,y,kind:'heal'|'shield',takenUntil} — respawn after cooldown
     zone: { cx: C.map.size / 2, cy: C.map.size / 2, radius: C.map.size * C.zone.startRadiusFactor, nextShrink: C.zone.firstShrinkSec, shrinks: 0 },
     events: [],              // telemetry event log
     placementOrder: [],      // ids in order of elimination (last = winner)
@@ -31,8 +32,63 @@ export function createGame(seed = 42, opts = {}) {
   };
   spawnPiles(g);
   spawnObstacles(g);
+  spawnPickups(g);
   spawnPlayers(g, opts);
+  applyClass(g, humanPlayer(g), opts.classId);
   return g;
+}
+
+// Heal packs & shields scattered on the map. Taken → respawn after cooldown.
+function spawnPickups(g) {
+  const m = C.map.size;
+  for (let i = 0; i < C.items.healSpawn; i++) {
+    g.pickups.push({ id: uid(), kind: 'heal', x: g.rng.range(80, m - 80), y: g.rng.range(80, m - 80), takenUntil: 0 });
+  }
+  for (let i = 0; i < C.items.shieldSpawn; i++) {
+    g.pickups.push({ id: uid(), kind: 'shield', x: g.rng.range(80, m - 80), y: g.rng.range(80, m - 80), takenUntil: 0 });
+  }
+}
+
+// Apply a class (character trait choice) to a player — multipliers used by
+// throw/damage/move/craft. Defaults are 1.0 (jack) when no class chosen.
+export function applyClass(g, p, classId) {
+  if (!p) return;
+  const cls = CLS[classId] || CLS.jack;
+  p.classId = cls.id;
+  p.skin = p.isHuman ? cls.skin : p.skin;
+  p.mods = {
+    throwRange: cls.throwRangeMul, damage: cls.damageMul,
+    speed: cls.speedMul, craftSec: cls.craftSecMul,
+  };
+  p.hp = Math.round(C.player.maxHp * cls.maxHpMul);
+  p.maxHp = p.hp;
+}
+
+// Try to pick up any item within range. Returns the pickup kind or null.
+export function tryPickup(g, p) {
+  for (const it of g.pickups) {
+    if (it.takenUntil > g.t) continue;
+    if (Math.hypot(it.x - p.x, it.y - p.y) > C.items.pickupRange) continue;
+    if (it.kind === 'heal') {
+      const max = p.maxHp || C.player.maxHp;
+      if (p.hp >= max) continue; // don't waste
+      setHp(g, p, Math.min(max, p.hp + C.items.healAmount));
+      it.takenUntil = g.t + C.items.healRespawnSec;
+      // relocate for next spawn so camping is pointless
+      it.x = g.rng.range(80, C.map.size - 80); it.y = g.rng.range(80, C.map.size - 80);
+      g.events.push({ t: g.t, type: 'heal', id: p.id });
+      return 'heal';
+    }
+    if (it.kind === 'shield') {
+      if (p.shieldHits > 0) continue;
+      p.shieldHits = C.items.shieldHits;
+      it.takenUntil = g.t + C.items.shieldRespawnSec;
+      it.x = g.rng.range(80, C.map.size - 80); it.y = g.rng.range(80, C.map.size - 80);
+      g.events.push({ t: g.t, type: 'shield', id: p.id });
+      return 'shield';
+    }
+  }
+  return null;
 }
 
 // Static obstacles: rocks, trees, cabins spread over the map. They block
@@ -89,6 +145,8 @@ function spawnPlayers(g, opts) {
       crafting: false, craftTimer: 0, craftPile: null,
       cover: false,
       walls: 0, decoys: 0,
+      maxHp: C.player.maxHp, shieldHits: 0,
+      mods: { throwRange: 1, damage: 1, speed: 1, craftSec: 1 },
       npc: isHuman ? null : { state: 'PATROL', target: null, reactTimer: 0, moveTx: 0, moveTy: 0, wantCraft: false, aimError: 0 },
       diff: g.difficulty,
     };
@@ -99,14 +157,16 @@ function spawnPlayers(g, opts) {
 
 // ---- setters -------------------------------------------------------------
 export function setHp(g, p, v) {
-  const nv = Math.max(0, Math.min(C.player.maxHp, v));
+  const nv = Math.max(0, Math.min(p.maxHp || C.player.maxHp, v));
   const delta = p.hp - nv;
   p.hp = nv;
   if (nv <= 0 && p.alive) eliminate(g, p);
   return delta;
 }
 export function damage(g, p, amount, byId = null) {
-  const eff = p.cover ? amount * C.throw.coverDamageMul : amount;
+  let eff = p.cover ? amount * C.throw.coverDamageMul : amount;
+  // shield item: reduced damage while charges last
+  if (p.shieldHits > 0) { eff *= C.items.shieldDamageMul; p.shieldHits--; }
   const before = p.hp;
   setHp(g, p, p.hp - eff);
   g.stats.totalDamage += before - p.hp;
@@ -154,7 +214,7 @@ export function startCraft(g, p) {
   if (!p.alive || p.crafting) return false;
   const pile = nearestPile(g, p);
   if (!pile) return false;
-  p.crafting = true; p.craftTimer = C.craft.seconds; p.craftPile = pile.id;
+  p.crafting = true; p.craftTimer = C.craft.seconds * ((p.mods && p.mods.craftSec) || 1); p.craftPile = pile.id;
   g.stats.craftAttempts++;
   g.events.push({ t: g.t, type: 'craftStart', id: p.id });
   return true;
@@ -181,11 +241,12 @@ function finishCraft(g, p) {
 export function throwSnowball(g, p, aim, charge01) {
   if (!p.alive || p.crafting || p.snowballs <= 0) return null;
   addSnowballs(p, -1);
-  const range = C.throw.minRange + (C.throw.maxRange - C.throw.minRange) * Math.max(0, Math.min(1, charge01));
+  const range = (C.throw.minRange + (C.throw.maxRange - C.throw.minRange) * Math.max(0, Math.min(1, charge01))) * ((p.mods && p.mods.throwRange) || 1);
   const sb = {
     id: uid(), ownerId: p.id, isNpc: p.isNpc,
     x: p.x, y: p.y, dirX: Math.cos(aim), dirY: Math.sin(aim),
     traveled: 0, range, speed: C.throw.speed, dead: false,
+    dmgMul: (p.mods && p.mods.damage) || 1,
   };
   g.snowballs.push(sb);
   g.stats.throws++;
@@ -256,6 +317,21 @@ export function step(g, dt) {
     g.events.push({ t: g.t, type: 'zoneShrink', radius: g.zone.radius });
   }
 
+  // pile respawn: when a depleted pile's cooldown expires it relocates INSIDE
+  // the current zone, so snowball supply never dries up as the map closes in
+  for (const pile of g.piles) {
+    if (pile.cooldownUntil > 0 && g.t >= pile.cooldownUntil) {
+      const a = g.rng.range(0, Math.PI * 2);
+      const rr = g.rng.range(0, g.zone.radius * 0.85);
+      pile.x = g.zone.cx + Math.cos(a) * rr;
+      pile.y = g.zone.cy + Math.sin(a) * rr;
+      pile.cooldownUntil = 0;
+      g.events.push({ t: g.t, type: 'pileRespawn', id: pile.id });
+    }
+  }
+  // NPCs auto-pickup items they walk over
+  for (const p of g.players) { if (p.alive && p.isNpc) tryPickup(g, p); }
+
   // players
   for (const p of g.players) {
     if (!p.alive) continue;
@@ -311,7 +387,7 @@ export function step(g, dt) {
     for (const p of g.players) {
       if (!p.alive || p.id === sb.ownerId) continue;
       if (Math.hypot(p.x - nx, p.y - ny) < C.player.radius + C.throw.radius) {
-        const dealt = damage(g, p, C.throw.damage, sb.ownerId);
+        const dealt = damage(g, p, C.throw.damage * (sb.dmgMul || 1), sb.ownerId);
         if (dealt > 0) { g.stats.hits++; g.kills[sb.ownerId] = (g.kills[sb.ownerId] || 0); }
         if (p.crafting) cancelCraft(g, p, 'hit');
         if (!p.alive) { g.kills[sb.ownerId] = (g.kills[sb.ownerId] || 0) + 1; g.events.push({ t: g.t, type: 'kill', by: sb.ownerId, victim: p.id }); }
@@ -345,7 +421,7 @@ export function step(g, dt) {
 // ---- player movement (called by input/NPC) ------------------------------
 export function movePlayer(g, p, mvx, mvy, dt) {
   if (!p.alive || p.crafting) return;
-  const spd = C.player.speed * (p.cover ? C.player.coverSpeedMul : 1) * dt;
+  const spd = C.player.speed * ((p.mods && p.mods.speed) || 1) * (p.cover ? C.player.coverSpeedMul : 1) * dt;
   const len = Math.hypot(mvx, mvy) || 1;
   let nx = Math.max(0, Math.min(C.map.size, p.x + (mvx / len) * spd));
   let ny = Math.max(0, Math.min(C.map.size, p.y + (mvy / len) * spd));
@@ -479,7 +555,7 @@ export function serialize(g) {
     seed: g.seed, t: g.t, phase: g.phase, over: g.over, won: g.won,
     difficulty: g.difficulty,
     players: g.players, snowballs: g.snowballs, walls: g.walls, decoys: g.decoys,
-    piles: g.piles, obstacles: g.obstacles, corpses: g.corpses,
+    piles: g.piles, obstacles: g.obstacles, corpses: g.corpses, pickups: g.pickups,
     zone: g.zone, placementOrder: g.placementOrder, kills: g.kills,
     _humanId: g._humanId, stats: g.stats,
   });

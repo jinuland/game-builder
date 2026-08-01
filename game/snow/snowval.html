@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head><meta charset="UTF-8" /><title>snowval</title><link rel="stylesheet" href="src/style.css" /></head>
+<body>
+  <div id="game"></div>
+  <pre id="report" style="position:fixed;inset:0;z-index:999;background:#0d1b2a;color:#7fffd4;padding:20px;font-size:13px;overflow:auto"></pre>
+  <script src="bundle.js"></script>
+  <script>
+    const rep = window.__SR.__validate();
+    document.getElementById('report').textContent =
+      'SNOWVAL ' + (rep.pass ? 'PASS' : 'FAIL') + '\n' +
+      rep.checks.map(c => (c.pass ? 'ok  ' : 'FAIL') + ' ' + c.name + (c.detail ? ' [' + c.detail + ']' : '')).join('\n') +
+      (rep.errors.length ? '\nERRORS:\n' + rep.errors.join('\n') : '');
+    document.title = rep.pass ? 'SNOWVAL_PASS' : 'SNOWVAL_FAIL';
+  </script>
+</body>
+</html>

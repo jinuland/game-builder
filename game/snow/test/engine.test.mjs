@@ -232,3 +232,73 @@ test('TC-022 movePlayer blocked during crafting', () => {
   movePlayer(g, p, 1, 0, 1);
   assert.equal(p.x, x0, 'no move while crafting');
 });
+
+// ---- v3 features: pickups, shield, classes, pile respawn -------------------
+import { tryPickup, applyClass } from '../src/engine.js';
+import { CLASSES } from '../src/config.js';
+
+test('TC-023 heal pack restores hp and goes on cooldown', () => {
+  const g = createGame(1, { total: 2 });
+  const p = human(g);
+  setHp(g, p, 50);
+  g.pickups = [{ id: 1, kind: 'heal', x: p.x, y: p.y, takenUntil: 0 }];
+  const got = tryPickup(g, p);
+  assert.equal(got, 'heal');
+  assert.equal(p.hp, 90, '+40 heal');
+  assert.ok(g.pickups[0].takenUntil > g.t, 'on cooldown');
+});
+
+test('TC-024 heal pack not consumed at full hp', () => {
+  const g = createGame(1, { total: 2 });
+  const p = human(g);
+  g.pickups = [{ id: 1, kind: 'heal', x: p.x, y: p.y, takenUntil: 0 }];
+  assert.equal(tryPickup(g, p), null);
+});
+
+test('TC-025 shield reduces damage for N hits then expires', () => {
+  const g = createGame(1, { total: 2 });
+  const p = g.players[1]; p.hp = 100; p.cover = false;
+  g.pickups = [{ id: 1, kind: 'shield', x: p.x, y: p.y, takenUntil: 0 }];
+  assert.equal(tryPickup(g, p), 'shield');
+  assert.equal(p.shieldHits, C.items.shieldHits);
+  const dealt = damage(g, p, 20);
+  assert.equal(dealt, 20 * C.items.shieldDamageMul, 'shield reduces damage');
+  assert.equal(p.shieldHits, C.items.shieldHits - 1, 'charge consumed');
+});
+
+test('TC-026 class multipliers: sniper longer range, tank more hp & faster craft', () => {
+  const g1 = createGame(1, { total: 2, classId: 'white' });
+  const h1 = human(g1);
+  assert.equal(h1.maxHp, Math.round(100 * CLASSES.white.maxHpMul));
+  addSnowballs(h1, 1);
+  const sb = throwSnowball(g1, h1, 0, 1);
+  assert.ok(Math.abs(sb.range - C.throw.maxRange * CLASSES.white.throwRangeMul) < 1, `range ${sb.range}`);
+  const g2 = createGame(1, { total: 2, classId: 'bear' });
+  const h2 = human(g2);
+  assert.equal(h2.maxHp, Math.round(100 * CLASSES.bear.maxHpMul));
+  g2.piles.push({ id: 9, x: h2.x, y: h2.y, cooldownUntil: 0 });
+  startCraft(g2, h2);
+  assert.ok(Math.abs(h2.craftTimer - C.craft.seconds * CLASSES.bear.craftSecMul) < 0.01, `craft ${h2.craftTimer}`);
+});
+
+test('TC-027 depleted pile respawns inside zone after cooldown', () => {
+  const g = createGame(1, { total: 2 });
+  const p = human(g);
+  g.piles = [{ id: 5, x: p.x, y: p.y, cooldownUntil: 0 }];
+  startCraft(g, p); step(g, 3.01);
+  const pile = g.piles[0];
+  assert.ok(pile.cooldownUntil > 0, 'depleted');
+  // advance past cooldown
+  let guard = 0;
+  while (pile.cooldownUntil !== 0 && guard++ < 800) step(g, 0.25);
+  assert.equal(pile.cooldownUntil, 0, 'respawned');
+  const d = Math.hypot(pile.x - g.zone.cx, pile.y - g.zone.cy);
+  assert.ok(d <= g.zone.radius * 0.86, 'inside zone');
+});
+
+test('TC-028 sniper damage multiplier travels with the snowball', () => {
+  const g = createGame(1, { total: 2, classId: 'white' });
+  const h = human(g); addSnowballs(h, 1);
+  const sb = throwSnowball(g, h, 0, 1);
+  assert.ok(Math.abs(sb.dmgMul - CLASSES.white.damageMul) < 0.001);
+});

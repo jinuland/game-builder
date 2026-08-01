@@ -6,7 +6,7 @@
 import * as THREE from 'three';
 import * as E from './engine.js';
 import { AudioEngine } from './audio.js';
-import { CONFIG as C, SKINS, actForSurvivors } from './config.js';
+import { CONFIG as C, SKINS, CLASSES, actForSurvivors } from './config.js';
 
 const SAVE_KEY = 'snow_royale_save_v1';
 const EYE = 17;               // camera eye height (world units; 1200u map)
@@ -253,6 +253,31 @@ export class SnowApp {
     this._zoneRingR = g.zone.radius;
     s.add(this.zoneRing);
 
+    // pickups: heal packs (white box + red cross) and shields (blue glowing disc)
+    this.pickupMeshes = new Map();
+    for (const it of g.pickups) {
+      const grp = new THREE.Group();
+      if (it.kind === 'heal') {
+        const box = new THREE.Mesh(new THREE.BoxGeometry(10, 7, 10), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6 }));
+        box.position.y = 5; grp.add(box);
+        const crossMat = new THREE.MeshBasicMaterial({ color: 0xe03131 });
+        const c1 = new THREE.Mesh(new THREE.BoxGeometry(6.4, 1.8, 1.8), crossMat); c1.position.y = 9.2; grp.add(c1);
+        const c2 = new THREE.Mesh(new THREE.BoxGeometry(1.8, 1.8, 6.4), crossMat); c2.position.y = 9.2; grp.add(c2);
+      } else {
+        const disc = new THREE.Mesh(
+          new THREE.CylinderGeometry(7, 7, 2.4, 18),
+          new THREE.MeshStandardMaterial({ color: 0x4d9fff, emissive: 0x2266cc, emissiveIntensity: 0.7, roughness: 0.3 }),
+        );
+        disc.position.y = 6; disc.rotation.x = 0.35; grp.add(disc);
+      }
+      grp.position.set(it.x, 0, it.y);
+      s.add(grp);
+      this.pickupMeshes.set(it.id, grp);
+    }
+
+    // enemy HP bars: billboard sprites above each actor
+    this.hpSprites = new Map();
+
     // snowfall particles
     const flakes = 900;
     const fGeo = new THREE.BufferGeometry();
@@ -275,6 +300,45 @@ export class SnowApp {
       s.add(fig);
       this.actors.set(p.id, fig);
     }
+  }
+
+  // floating HP bar sprite for an enemy (canvas texture, camera-facing)
+  _hpSprite(p) {
+    let s = this.hpSprites && this.hpSprites.get(p.id);
+    if (!s && this.hpSprites) {
+      const cv = document.createElement('canvas'); cv.width = 96; cv.height = 26;
+      const tex = new THREE.CanvasTexture(cv);
+      const mat = new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true });
+      s = new THREE.Sprite(mat);
+      s.scale.set(26, 7, 1);
+      s.userData = { cv, tex, lastHp: -1, lastShield: -1 };
+      this.scene3.add(s);
+      this.hpSprites.set(p.id, s);
+      this._paintHpSprite(s, p);
+    }
+    return s;
+  }
+  _paintHpSprite(s, p) {
+    const { cv, tex } = s.userData;
+    const x = cv.getContext('2d');
+    x.clearRect(0, 0, cv.width, cv.height);
+    // name
+    x.font = 'bold 10px system-ui'; x.textAlign = 'center';
+    x.fillStyle = p.isNpc ? '#d7dde3' : '#ffffff';
+    x.fillText(p.name.slice(0, 14), cv.width / 2, 9);
+    // bar
+    const bw = 84, bh = 7, bx = (cv.width - bw) / 2, by = 13;
+    x.fillStyle = 'rgba(0,0,0,0.65)'; x.fillRect(bx, by, bw, bh);
+    const frac = Math.max(0, p.hp / (p.maxHp || 100));
+    x.fillStyle = frac > 0.5 ? '#7FFFD4' : frac > 0.25 ? '#FF6B35' : '#DC143C';
+    x.fillRect(bx + 1, by + 1, (bw - 2) * frac, bh - 2);
+    // shield pips
+    if (p.shieldHits > 0) {
+      x.fillStyle = '#4d9fff';
+      for (let i = 0; i < Math.min(6, p.shieldHits); i++) x.fillRect(bx + i * 7, by + bh + 2, 5, 3);
+    }
+    tex.needsUpdate = true;
+    s.userData.lastHp = p.hp; s.userData.lastShield = p.shieldHits;
   }
 
   // low-poly humanoid from primitives (open-source procedural, no downloads)
@@ -327,6 +391,21 @@ export class SnowApp {
       diffRow.appendChild(b);
     }
     c.appendChild(diffRow);
+    // class (character trait) selection
+    this._classId = this._classId || 'jack';
+    const clsHead = document.createElement('p'); clsHead.className = 'sr-sub'; clsHead.textContent = '캐릭터 특성 선택';
+    c.appendChild(clsHead);
+    const clsRow = document.createElement('div'); clsRow.className = 'sr-classrow';
+    for (const cls of Object.values(CLASSES)) {
+      const b = document.createElement('button');
+      b.className = 'sr-class' + (this._classId === cls.id ? ' on' : '');
+      const nm = document.createElement('b'); nm.textContent = cls.name;
+      const ds = document.createElement('span'); ds.textContent = cls.desc;
+      b.appendChild(nm); b.appendChild(ds);
+      b.addEventListener('click', () => { this._classId = cls.id; this._showTitle(); });
+      clsRow.appendChild(b);
+    }
+    c.appendChild(clsRow);
     // Y-axis invert option (default OFF = standard FPS: mouse up → look up)
     this.invertY = this.invertY ?? false;
     const inv = this._btn(this.invertY ? '↕ 마우스 상하 반전: 켜짐' : '↕ 마우스 상하 반전: 꺼짐', () => { this.invertY = !this.invertY; this._showTitle(); });
@@ -364,7 +443,7 @@ export class SnowApp {
   newGame(seed = this.seed) {
     this.audio.init(); this.audio.resume();
     const s = seed != null ? seed : (Math.floor(performance.now()) % 100000) + 1;
-    this.game = E.createGame(s, { total: C.match.total, difficulty: this._difficulty || 'normal' });
+    this.game = E.createGame(s, { total: C.match.total, difficulty: this._difficulty || 'normal', classId: this._classId || 'jack' });
     this.human = E.humanPlayer(this.game);
     this._buildWorld();
     this.sceneName = 'drop';
@@ -538,6 +617,12 @@ export class SnowApp {
     if (surv !== this._lastSurvivors) { this.audio.setIntensity(surv); this._lastSurvivors = surv; }
     if (g.zone.shrinks !== this._lastShrinks) { this._lastShrinks = g.zone.shrinks; this.audio.zoneWarn(); this._toast('⚠ 눈보라 구역이 좁아집니다!'); }
     if (beforeCraft && !h.crafting && h.craftTimer <= 0 && h.alive) this.audio.craftDone();
+    // human auto-pickup: walk over heal/shield to grab it
+    if (h.alive) {
+      const got = E.tryPickup(g, h);
+      if (got === 'heal') { this.audio.craftDone(); this._toast(`💊 힐팩 +${C.items.healAmount} HP`); }
+      if (got === 'shield') { this.audio.wall(); this._toast(`🛡 방패 획득 — 다음 ${C.items.shieldHits}회 피격 피해 ${Math.round((1 - C.items.shieldDamageMul) * 100)}% 감소`); }
+    }
     if (this.viewKick > 0) this.viewKick = Math.max(0, this.viewKick - dt * 4);
     if (g.over) this._showResult();
   }
@@ -555,13 +640,14 @@ export class SnowApp {
     const lookZ = h.y + Math.sin(this.yaw) * Math.cos(this.pitch) * 10;
     this.camera.lookAt(lookX, lookY, lookZ);
 
-    // actors: position + walk swing + aim yaw
+    // actors: position + walk swing + aim yaw + floating HP bar
     for (const p of g.players) {
       if (p.id === g._humanId) continue;
       const fig = this.actors.get(p.id);
       if (!fig) continue;
       fig.visible = p.alive;
-      if (!p.alive) continue;
+      const hpS = this._hpSprite(p);
+      if (!p.alive) { if (hpS) hpS.visible = false; continue; }
       fig.position.set(p.x, 0, p.y);
       fig.rotation.y = -p.aim + Math.PI / 2;
       const swing = Math.sin(now / 130 + p.id) * 0.5;
@@ -569,6 +655,12 @@ export class SnowApp {
       if (ud.legL) { ud.legL.rotation.x = swing; ud.legR.rotation.x = -swing; }
       if (p.crafting) { ud.armL.rotation.x = -1.2; ud.armR.rotation.x = -1.2; }
       else { ud.armL.rotation.x = swing * 0.5; ud.armR.rotation.x = -swing * 0.5; }
+      // HP bar sprite hovers over the head, redrawn when hp changes
+      if (hpS) {
+        hpS.visible = true;
+        hpS.position.set(p.x, CHAR_SCALE * 2.75, p.y);
+        if (hpS.userData.lastHp !== p.hp || hpS.userData.lastShield !== p.shieldHits) this._paintHpSprite(hpS, p);
+      }
     }
 
     // corpses: when a player dies, tip their figure over and leave it in the snow
@@ -675,10 +767,27 @@ export class SnowApp {
     }
     for (const [id, m] of this.decoyMeshes) if (!decSeen.has(id)) { this.scene3.remove(m); this.decoyMeshes.delete(id); }
 
-    // piles cooldown tint
+    // piles cooldown tint + position (they respawn/relocate)
     for (const pile of g.piles) {
       const m = this.pileMeshes && this.pileMeshes.get(pile.id);
-      if (m) m.material.color.setHex(pile.cooldownUntil > g.t ? 0xc3cdd6 : 0xffffff);
+      if (m) {
+        m.material.color.setHex(pile.cooldownUntil > g.t ? 0xc3cdd6 : 0xffffff);
+        m.position.set(pile.x, 0, pile.y);
+      }
+    }
+
+    // pickups: bob + spin, hidden while on respawn cooldown
+    if (this.pickupMeshes) {
+      for (const it of g.pickups) {
+        const m = this.pickupMeshes.get(it.id);
+        if (!m) continue;
+        const taken = it.takenUntil > g.t;
+        m.visible = !taken;
+        if (!taken) {
+          m.position.set(it.x, Math.sin(now / 400 + it.id) * 1.6, it.y);
+          m.rotation.y = now / 800;
+        }
+      }
     }
 
     // zone wall scale + pulse (better visibility)
@@ -719,9 +828,12 @@ export class SnowApp {
       dt = Math.min(0.05, dt) * this.timeScale;
       if (this.game && (this.sceneName === 'play' || this.sceneName === 'drop')) this._update(dt);
       if (this.game && this.scene3) {
-        if (this.sceneName === 'drop') this._renderDrop(now);
-        else { this._sync3d(now); this.renderer.render(this.scene3, this.camera); }
-        this._renderFx(now);
+        if (this.sceneName === 'drop') {
+          this._renderDrop(now); // draws its own fx-map overlay — don't clear it
+        } else {
+          this._sync3d(now); this.renderer.render(this.scene3, this.camera);
+          this._renderFx(now);
+        }
         this._renderHud();
       }
       requestAnimationFrame(frame);
@@ -730,31 +842,39 @@ export class SnowApp {
   }
 
   _renderDrop(now) {
-    // aerial camera slowly descending toward drop target — real 3D flyover
+    // aerial camera slowly descending toward drop target — real 3D flyover.
+    // sync FIRST (it resets the camera to eye height), then aim the aerial cam.
     const g = this.game;
+    this._sync3d(now);
     const t01 = Math.min(1, this.dropT / 8);
-    const alt = 700 - t01 * 620;
+    const alt = 520 - t01 * 470;
     const tx = this.dropTarget ? this.dropTarget.x : g.zone.cx;
     const ty = this.dropTarget ? this.dropTarget.y : g.zone.cy;
-    this.camera.position.set(tx - 120 + t01 * 100, alt, ty + 240 - t01 * 200);
-    this.camera.lookAt(tx, 0, ty);
-    this._sync3d(now);
+    // oblique fly-in: camera trails behind & above the target, swooping down
+    this.camera.position.set(tx - 260 + t01 * 220, alt + 40, ty + 380 - t01 * 330);
+    this.camera.lookAt(tx, 10, ty);
     this.renderer.render(this.scene3, this.camera);
-    // 2D map overlay in corner for click-targeting
+    // 2D tactical map (right side panel) for click-targeting — 3D flyover stays visible
     const ctx = this.fxCtx;
     ctx.clearRect(0, 0, this.vw, this.vh);
-    const zoom = Math.min(this.vw, this.vh) / (C.map.size * 1.05);
-    const ox = this.vw / 2 - g.zone.cx * zoom, oy = this.vh / 2 - g.zone.cy * zoom;
-    ctx.fillStyle = 'rgba(13,27,42,0.25)'; ctx.fillRect(ox, oy, C.map.size * zoom, C.map.size * zoom);
-    ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.strokeRect(ox, oy, C.map.size * zoom, C.map.size * zoom);
+    const mapSz = Math.min(this.vh * 0.55, 340);
+    const zoom = mapSz / C.map.size;
+    const ox = this.vw - mapSz - 24, oy = (this.vh - mapSz) / 2;
+    this._dropMap = { ox, oy, zoom };
+    ctx.fillStyle = 'rgba(13,27,42,0.72)'; ctx.fillRect(ox - 8, oy - 26, mapSz + 16, mapSz + 40);
+    ctx.strokeStyle = '#7fd4ff'; ctx.strokeRect(ox - 8, oy - 26, mapSz + 16, mapSz + 40);
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 13px system-ui'; ctx.textAlign = 'center';
+    ctx.fillText('🗺 클릭해서 낙하 지점 선택', ox + mapSz / 2, oy - 9);
+    ctx.fillStyle = 'rgba(200,220,235,0.25)'; ctx.fillRect(ox, oy, mapSz, mapSz);
     ctx.beginPath(); ctx.arc(g.zone.cx * zoom + ox, g.zone.cy * zoom + oy, g.zone.radius * zoom, 0, Math.PI * 2);
     ctx.strokeStyle = '#7fd4ff'; ctx.lineWidth = 2; ctx.stroke();
-    for (const p of g.piles) { ctx.fillStyle = 'rgba(255,255,255,0.9)'; ctx.fillRect(p.x * zoom + ox - 1, p.y * zoom + oy - 1, 3, 3); }
+    for (const p of g.piles) { ctx.fillStyle = 'rgba(255,255,255,0.95)'; ctx.fillRect(p.x * zoom + ox - 1, p.y * zoom + oy - 1, 3, 3); }
+    for (const it of g.pickups) { ctx.fillStyle = it.kind === 'heal' ? '#ff6b6b' : '#4d9fff'; ctx.fillRect(it.x * zoom + ox - 1.5, it.y * zoom + oy - 1.5, 3.5, 3.5); }
     if (this.dropTarget) {
       const px = this.dropTarget.x * zoom + ox, py = this.dropTarget.y * zoom + oy;
       ctx.strokeStyle = '#FF6B35'; ctx.lineWidth = 3;
-      ctx.beginPath(); ctx.arc(px, py, 14, 0, Math.PI * 2); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(px - 20, py); ctx.lineTo(px + 20, py); ctx.moveTo(px, py - 20); ctx.lineTo(px, py + 20); ctx.stroke();
+      ctx.beginPath(); ctx.arc(px, py, 11, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(px - 16, py); ctx.lineTo(px + 16, py); ctx.moveTo(px, py - 16); ctx.lineTo(px, py + 16); ctx.stroke();
     }
   }
 
@@ -890,10 +1010,14 @@ export class SnowApp {
 
     const bl = el('div', 'sr-hud-bl');
     const hpWrap = el('div', 'sr-hp');
-    const hpFill = el('div', 'sr-hp-fill'); hpFill.style.width = Math.max(0, h.hp) + '%';
-    hpFill.style.background = h.hp > 50 ? '#7FFFD4' : h.hp > 25 ? '#FF6B35' : '#DC143C';
-    hpWrap.appendChild(hpFill); hpWrap.appendChild(el('span', 'sr-hp-txt', `${Math.max(0, Math.round(h.hp))}`));
+    const maxHp = h.maxHp || 100;
+    const hpFill = el('div', 'sr-hp-fill'); hpFill.style.width = Math.max(0, (h.hp / maxHp) * 100) + '%';
+    hpFill.style.background = h.hp > maxHp * 0.5 ? '#7FFFD4' : h.hp > maxHp * 0.25 ? '#FF6B35' : '#DC143C';
+    hpWrap.appendChild(hpFill); hpWrap.appendChild(el('span', 'sr-hp-txt', `${Math.max(0, Math.round(h.hp))}/${maxHp}`));
     bl.appendChild(hpWrap);
+    if (h.shieldHits > 0) bl.appendChild(el('div', 'sr-shield', `🛡 방패 ${h.shieldHits}회`));
+    const cls = CLASSES[h.classId];
+    if (cls) bl.appendChild(el('div', 'sr-class-tag', cls.name));
     if (this.sceneName === 'drop') bl.appendChild(el('div', 'sr-drop', `낙하 중 — 착지 ${Math.max(0, Math.ceil(8 - this.dropT))}s (지도 클릭=낙하 지점)`));
     this.hud.appendChild(bl);
 
@@ -955,6 +1079,10 @@ export class SnowApp {
       const dists = [80, 150, 260, 420];
       near.forEach((p, i) => { p.x = h.x + dists[i]; p.y = h.y + (i - 1.5) * 55; p.aim = Math.PI + Math.atan2(p.y - h.y, p.x - h.x); });
       this.game.piles.push({ id: 90001, x: h.x + 44, y: h.y + 12, cooldownUntil: 0 });
+      // place pickups in view for screenshot QA
+      this.game.pickups.push({ id: 90002, kind: 'heal', x: h.x + 70, y: h.y - 40, takenUntil: 0 });
+      this.game.pickups.push({ id: 90003, kind: 'shield', x: h.x + 110, y: h.y + 60, takenUntil: 0 });
+      near.forEach((p) => { p.hp = 40 + ((p.id * 13) % 55); }); // varied HP so gauges are visible
       return;
     }
     if (state === 'corpse') {
@@ -998,6 +1126,18 @@ export class SnowApp {
       let guard = 0; while (!g.over && guard++ < 12000) { const hh = E.humanPlayer(g); if (hh.alive) { if (!hh.npc) hh.npc = { state: 'PATROL', reactTimer: 0 }; const w = hh.isNpc; hh.isNpc = true; E.npcThink(g, hh, 0.1); hh.isNpc = w; } E.step(g, 0.1); }
       chk('매치 완주(승자 1인)', g.over && E.aliveCount(g) === 1, `t=${g.t.toFixed(0)}s`);
       chk('시체 다수 누적(사라지지 않음)', g.corpses.length >= 18, `corpses=${g.corpses.length}`);
+      // v3: pickups / classes / HP sprites
+      const g3 = E.createGame(7, { total: 20, difficulty: 'normal', classId: 'bear' });
+      chk('아이템 스폰(힐팩+방패)', g3.pickups.filter((i) => i.kind === 'heal').length === 10 && g3.pickups.filter((i) => i.kind === 'shield').length === 6, `${g3.pickups.length}`);
+      const h3 = E.humanPlayer(g3);
+      chk('클래스 적용(빅 베어 HP 130)', h3.maxHp === 130 && h3.hp === 130, `${h3.hp}/${h3.maxHp}`);
+      E.setHp(g3, h3, 50);
+      g3.pickups[0].x = h3.x; g3.pickups[0].y = h3.y; g3.pickups[0].kind = 'heal'; g3.pickups[0].takenUntil = 0;
+      chk('힐팩 +40', E.tryPickup(g3, h3) === 'heal' && h3.hp === 90, `${h3.hp}`);
+      this.game = g3; this.human = h3; this._buildWorld();
+      for (const p of g3.players) if (p.isNpc && p.alive) this._hpSprite(p);
+      chk('적 HP 게이지 스프라이트 19개', this.hpSprites.size === 19, `${this.hpSprites.size}`);
+      chk('아이템 3D 메시 생성', this.pickupMeshes && this.pickupMeshes.size === g3.pickups.length, `${this.pickupMeshes ? this.pickupMeshes.size : 0}`);
     } catch (e) { rep.errors.push(String(e && e.message || e)); }
     rep.pass = rep.checks.every((c) => c.pass) && rep.errors.length === 0;
     return rep;

@@ -71,3 +71,15 @@ html, body { margin: 0; height: 100%; background: var(--navy); color: var(--whit
   .sr-btn { width: 220px; }
   .sr-hud-bl { width: 170px; }
 }
+
+/* class selection on title */
+.sr-classrow { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; max-width: 620px; margin: 6px auto 14px; }
+.sr-class { background: rgba(255,255,255,0.07); border: 1px solid rgba(168,216,234,0.4); border-radius: 10px;
+  padding: 10px 12px; color: var(--white); cursor: pointer; text-align: left; display: flex; flex-direction: column; gap: 3px; }
+.sr-class b { font-size: 13px; color: var(--ice); }
+.sr-class span { font-size: 11px; color: rgba(245,245,245,0.65); line-height: 1.4; }
+.sr-class.on { border-color: var(--orange); background: rgba(255,107,53,0.16); }
+.sr-class.on b { color: var(--orange); }
+/* shield & class HUD tags */
+.sr-shield { font-size: 13px; font-weight: 800; color: #4d9fff; text-shadow: 0 1px 2px #000; }
+.sr-class-tag { font-size: 11px; color: rgba(245,245,245,0.7); text-shadow: 0 1px 2px #000; }
