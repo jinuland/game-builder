@@ -525,3 +525,45 @@ test('TC-041 endgame: last 2 far-apart bots hunt each other, no idle standoff', 
   const d1 = Math.hypot(a.x - b.x, a.y - b.y);
   assert.ok(d1 < d0 - 30, `bots closed distance (${d0.toFixed(0)} -> ${d1.toFixed(0)})`);
 });
+
+test('TC-042 towers: fixed layout, solid sides on foot, pad launch clears them', () => {
+  const g1 = createGame(1, { total: 2 });
+  const g2 = createGame(999, { total: 2 });
+  assert.deepEqual(
+    g1.towers.map((t) => [t.x, t.y]), g2.towers.map((t) => [t.x, t.y]),
+    'tower spots identical across seeds (fixed layout)');
+  assert.deepEqual(
+    g1.pads.map((t) => [t.x, t.y]), g2.pads.map((t) => [t.x, t.y]),
+    'pad spots identical across seeds');
+  // walking into a tower side stops you (no free step-up onto high ground)
+  const p = human(g1);
+  const tw = g1.towers[0];
+  p.x = tw.x - tw.r - 20; p.y = tw.y; p.z = 0; p.vz = 0;
+  g1.pads = []; // no pad interference
+  for (let i = 0; i < 120; i++) { movePlayer(g1, p, 1, 0, 1 / 60); step(g1, 1 / 60); }
+  assert.ok(p.z === 0, 'still at ground level');
+  assert.ok(Math.hypot(p.x - tw.x, p.y - tw.y) >= tw.r, 'blocked outside the rock');
+});
+
+test('TC-043 high ground: tower blocks ground throws, top-of-tower throws sail over', () => {
+  const g = createGame(1, { total: 2 });
+  const a = g.players[0], b = g.players[1];
+  const tw = { id: 900, x: 600, y: 500, r: 22, h: C.towers.height };
+  g.towers = [tw]; g.pads = []; g.obstacles = []; g.walls = [];
+  // freeze AI so positions stay deterministic during step()
+  a.isNpc = false; a.npc = null; b.isNpc = false; b.npc = null;
+  // ground shooter: tower between a and b -> ball dies on the rock
+  a.x = 500; a.y = 500; a.z = 0; b.x = 700; b.y = 500; b.cover = false;
+  addSnowballs(a, 2);
+  const hp0 = b.hp;
+  throwSnowball(g, a, 0, 1);
+  for (let i = 0; i < 200 && g.snowballs.length; i++) step(g, 1 / 60);
+  assert.equal(b.hp, hp0, 'ground throw blocked by tower rock');
+  // shooter on top of the tower: high flag lets it sail over the rock
+  a.z = C.towers.height;
+  const sb = throwSnowball(g, a, 0, 1);
+  assert.equal(sb.high, true, 'high-ground throw flagged');
+  let hit = false;
+  for (let i = 0; i < 200 && g.snowballs.length; i++) { step(g, 1 / 60); if (b.hp < hp0) { hit = true; break; } }
+  assert.ok(hit, 'throw from high ground reaches the target');
+});

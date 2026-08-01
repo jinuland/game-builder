@@ -15,13 +15,29 @@ export const CONFIG = {
     pill: {
       spawn: 14, respawnSec: 45, durationSec: 20,
       speedMul: 1.35, powerMul: 1.5, craftMul: 0.5,
-      mgChance: 0.3, mgAmmo: 75, mgFireInterval: 0.12, mgSpeed: 540, // straight-line rapid fire
+      mgChance: 0.45, mgAmmo: 75, mgFireInterval: 0.12, mgSpeed: 540, // straight-line rapid fire
     },
   },
-  // spring jump pads (Fortnite-style): step on → launch up + carry your run direction
-  pads: { count: 7, radius: 14, launchVel: 100, carryMul: 2.0 },
-  // climbable rock towers, one story high — reachable via jump pads
-  towers: { count: 6, radius: 22, height: 26 },
+  // spring jump pads (Fortnite-style): step on → launch up + carry your run direction.
+  // FIXED layout (fractions of map size): same spots every match, learnable.
+  pads: {
+    radius: 14, launchVel: 100, carryMul: 2.0,
+    spots: [
+      [0.50, 0.50],                                   // center
+      [0.28, 0.28], [0.72, 0.28], [0.28, 0.72], [0.72, 0.72], // inner diagonals
+      [0.50, 0.15], [0.85, 0.50], [0.50, 0.85], [0.15, 0.50], // edge midpoints
+    ],
+  },
+  // climbable rock towers, one story high — solid sides, reachable via the
+  // adjacent jump pad. FIXED layout paired 1:1 with the first pads.
+  towers: {
+    radius: 22, height: 26,
+    spots: [
+      [0.44, 0.50],                                   // next to center pad
+      [0.22, 0.28], [0.78, 0.28], [0.22, 0.72], [0.78, 0.72], // beside diagonal pads
+      [0.50, 0.09],                                   // north edge
+    ],
+  },
   craft: { seconds: 3, yield: 10, interactRange: 34 },
   throw: {
     minChargeMs: 200, maxChargeMs: 1500, minRange: 100, maxRange: 400,

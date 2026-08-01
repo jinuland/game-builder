@@ -56,30 +56,17 @@ function spawnPickups(g) {
   for (const it of g.pickups) if (it.kind === 'pill') it.buff = rollPillBuff(g);
 }
 
-// Spring jump pads: step on one → big vertical launch that carries your
-// current run direction (Fortnite-style). NPC-sized springs.
+// Spring jump pads: FIXED spots every match (learnable map knowledge),
+// step on one → big vertical launch that carries your run direction.
 function spawnPads(g) {
   const m = C.map.size;
-  g.pads = [];
-  for (let i = 0; i < C.pads.count; i++) {
-    g.pads.push({ id: uid(), x: g.rng.range(140, m - 140), y: g.rng.range(140, m - 140), r: C.pads.radius });
-  }
+  g.pads = C.pads.spots.map(([fx, fy]) => ({ id: uid(), x: fx * m, y: fy * m, r: C.pads.radius }));
 }
 
-// One-story rock towers you can land on (via jump pads) and walk across.
+// One-story rock towers at FIXED spots, paired with adjacent pads for access.
 function spawnTowers(g) {
   const m = C.map.size;
-  g.towers = [];
-  for (let i = 0; i < C.towers.count; i++) {
-    g.towers.push({ id: uid(), x: g.rng.range(160, m - 160), y: g.rng.range(160, m - 160), r: C.towers.radius, h: C.towers.height });
-  }
-  // pair most towers with a nearby pad so they're actually reachable
-  for (let i = 0; i < Math.min(g.pads.length, g.towers.length); i++) {
-    const tw = g.towers[i];
-    const a = g.rng.range(0, Math.PI * 2);
-    g.pads[i].x = Math.max(60, Math.min(m - 60, tw.x + Math.cos(a) * (tw.r + 34)));
-    g.pads[i].y = Math.max(60, Math.min(m - 60, tw.y + Math.sin(a) * (tw.r + 34)));
-  }
+  g.towers = C.towers.spots.map(([fx, fy]) => ({ id: uid(), x: fx * m, y: fy * m, r: C.towers.radius, h: C.towers.height }));
 }
 
 // Height of the walkable ground at (x,y): tower tops are elevated terrain.
@@ -127,6 +114,7 @@ export function fireMachineGun(g, p, aim) {
     x: p.x, y: p.y, dirX: Math.cos(aim), dirY: Math.sin(aim),
     traveled: 0, range: C.throw.maxRange * 1.1, speed: P.mgSpeed, dead: false,
     dmgMul: (p.mods && p.mods.damage) || 1, flat: true, // flat = straight line, no arc
+    high: p.z >= C.towers.height - 2,
   };
   g.snowballs.push(sb);
   g.stats.throws++;
@@ -358,6 +346,7 @@ export function throwSnowball(g, p, aim, charge01) {
     x: p.x, y: p.y, dirX: Math.cos(aim), dirY: Math.sin(aim),
     traveled: 0, range, speed: C.throw.speed, dead: false,
     dmgMul: ((p.mods && p.mods.damage) || 1) * buffMul(g, p, 'power'),
+    high: p.z >= C.towers.height - 2, // thrown from high ground: sails over tower rock
   };
   g.snowballs.push(sb);
   g.stats.throws++;
@@ -527,6 +516,13 @@ export function step(g, dt) {
     for (const o of g.obstacles) {
       if (Math.hypot(o.x - nx, o.y - ny) < o.r) { hitObstacle = true; break; }
     }
+    // towers block ground-level throws — real high ground: shooters below
+    // can't hit through the rock, defenders on top shoot over it
+    if (!hitObstacle && !sb.high) {
+      for (const tw of g.towers || []) {
+        if (Math.hypot(tw.x - nx, tw.y - ny) < tw.r) { hitObstacle = true; break; }
+      }
+    }
     if (hitObstacle) { sb.dead = true; continue; }
     // decoy collision (lures/destroys)
     let hitDecoy = false;
@@ -595,6 +591,15 @@ export function movePlayer(g, p, mvx, mvy, dt) {
         else { nx = p.x; ny = p.y; }
       }
     }
+  }
+  // tower sides are solid: you cannot walk up onto high ground — you must fly
+  // in from a jump pad (or already be on top / airborne above the rim)
+  for (const tw of g.towers || []) {
+    if (p.z >= tw.h - 0.5) continue;
+    const min = tw.r + C.player.radius * 0.4;
+    const dx = nx - tw.x, dy = ny - tw.y;
+    const d = Math.hypot(dx, dy);
+    if (d < min && d > 0.001) { nx = tw.x + (dx / d) * min; ny = tw.y + (dy / d) * min; }
   }
   p.x = Math.max(0, Math.min(C.map.size, nx));
   p.y = Math.max(0, Math.min(C.map.size, ny));
