@@ -1,0 +1,452 @@
+// Snow Royale core engine — pure logic, no DOM/Canvas. Fixed-timestep simulation
+// usable by both the browser render loop and the headless balance simulator.
+// All mutations flow through setters; no external `x.hp =` writes allowed.
+import { makeRng } from './rng.js';
+import { CONFIG as C, SKINS, actForSurvivors } from './config.js';
+
+let _uid = 1;
+const uid = () => _uid++;
+
+// ---- construction --------------------------------------------------------
+export function createGame(seed = 42, opts = {}) {
+  const rng = makeRng(seed);
+  const g = {
+    seed, rng,
+    t: 0,                    // elapsed seconds
+    phase: 'drop',           // drop | play | over
+    over: false, won: false, winner: null,
+    difficulty: opts.difficulty || 'normal',
+    players: [],             // all combatants (index 0 = human unless sim)
+    snowballs: [],           // active projectiles
+    walls: [], decoys: [],
+    piles: [],               // {x,y,cooldownUntil}
+    zone: { cx: C.map.size / 2, cy: C.map.size / 2, radius: C.map.size * C.zone.startRadiusFactor, nextShrink: C.zone.firstShrinkSec, shrinks: 0 },
+    events: [],              // telemetry event log
+    placementOrder: [],      // ids in order of elimination (last = winner)
+    kills: {},               // id -> kill count
+    _humanId: opts.humanId ?? 1,
+    stats: { craftAttempts: 0, craftDone: 0, craftCancel: 0, throws: 0, hits: 0, wallsBuilt: 0, decoys: 0, zoneDamageTicks: 0, zoneDamageTotal: 0, totalDamage: 0 },
+  };
+  spawnPiles(g);
+  spawnPlayers(g, opts);
+  return g;
+}
+
+function spawnPiles(g) {
+  const m = C.map.size;
+  for (let i = 0; i < C.map.snowPiles; i++) {
+    g.piles.push({ id: uid(), x: g.rng.range(60, m - 60), y: g.rng.range(60, m - 60), cooldownUntil: 0 });
+  }
+}
+
+function spawnPlayers(g, opts) {
+  const total = opts.total ?? C.match.total;
+  const m = C.map.size;
+  const skinKeys = ['jack', 'white', 'bear'];
+  // Spread spawns evenly on a jittered grid so players start far apart (no instant
+  // early bloodbath). 20 players -> 5x4 grid across the map.
+  const cols = 5, rows = Math.ceil(total / cols);
+  const cellW = m / cols, cellH = m / rows;
+  const order = [];
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) order.push([c, r]);
+  for (let i = 0; i < total; i++) {
+    const isHuman = !opts.allNpc && i === 0;
+    const id = g._humanId != null && isHuman ? g._humanId : uid();
+    const [gc, gr] = order[i % order.length];
+    const p = {
+      id, isHuman, isNpc: !isHuman,
+      name: isHuman ? '아이언 잭' : `[봇] ${['그레이', '프로스트', '아이시클', '블리자드'][i % 4]}-${i}`,
+      skin: isHuman ? 'jack' : (i % 3 === 0 ? 'bot' : skinKeys[i % 3]),
+      hp: C.player.maxHp, alive: true,
+      x: Math.min(m - 40, Math.max(40, gc * cellW + cellW / 2 + g.rng.range(-cellW * 0.3, cellW * 0.3))),
+      y: Math.min(m - 40, Math.max(40, gr * cellH + cellH / 2 + g.rng.range(-cellH * 0.3, cellH * 0.3))),
+      aim: g.rng.range(0, Math.PI * 2),
+      snowballs: 0,
+      crafting: false, craftTimer: 0, craftPile: null,
+      cover: false,
+      walls: 0, decoys: 0,
+      npc: isHuman ? null : { state: 'PATROL', target: null, reactTimer: 0, moveTx: 0, moveTy: 0, wantCraft: false, aimError: 0 },
+      diff: g.difficulty,
+    };
+    g.kills[id] = 0;
+    g.players.push(p);
+  }
+}
+
+// ---- setters -------------------------------------------------------------
+export function setHp(g, p, v) {
+  const nv = Math.max(0, Math.min(C.player.maxHp, v));
+  const delta = p.hp - nv;
+  p.hp = nv;
+  if (nv <= 0 && p.alive) eliminate(g, p);
+  return delta;
+}
+export function damage(g, p, amount, byId = null) {
+  const eff = p.cover ? amount * C.throw.coverDamageMul : amount;
+  const before = p.hp;
+  setHp(g, p, p.hp - eff);
+  g.stats.totalDamage += before - p.hp;
+  return before - p.hp;
+}
+export function addSnowballs(p, n) { p.snowballs = Math.max(0, p.snowballs + n); return p.snowballs; }
+
+function eliminate(g, p) {
+  if (!p.alive) return;
+  p.alive = false; p.crafting = false;
+  g.placementOrder.push(p.id);
+  g.events.push({ t: g.t, type: 'eliminate', id: p.id, isNpc: p.isNpc, place: aliveCount(g) + 1 });
+  checkWin(g);
+}
+
+export function aliveCount(g) { return g.players.filter((p) => p.alive).length; }
+export function humanPlayer(g) { return g.players.find((p) => p.id === g._humanId); }
+
+function checkWin(g) {
+  const alive = g.players.filter((p) => p.alive);
+  if (alive.length <= 1) {
+    g.phase = 'over'; g.over = true;
+    g.winner = alive[0] || null;
+    if (g.winner) g.placementOrder.push(g.winner.id);
+    const human = humanPlayer(g);
+    g.won = !!(g.winner && human && g.winner.id === human.id);
+    g.events.push({ t: g.t, type: 'gameover', winnerId: g.winner ? g.winner.id : null, humanWon: g.won });
+  }
+}
+
+// ---- crafting ------------------------------------------------------------
+export function nearestPile(g, p, range = C.craft.interactRange) {
+  let best = null, bd = range;
+  for (const pile of g.piles) {
+    if (pile.cooldownUntil > g.t) continue;
+    const d = Math.hypot(pile.x - p.x, pile.y - p.y);
+    if (d <= bd) { bd = d; best = pile; }
+  }
+  return best;
+}
+
+export function startCraft(g, p) {
+  if (!p.alive || p.crafting) return false;
+  const pile = nearestPile(g, p);
+  if (!pile) return false;
+  p.crafting = true; p.craftTimer = C.craft.seconds; p.craftPile = pile.id;
+  g.stats.craftAttempts++;
+  g.events.push({ t: g.t, type: 'craftStart', id: p.id });
+  return true;
+}
+
+export function cancelCraft(g, p, reason = 'move') {
+  if (!p.crafting) return;
+  p.crafting = false; p.craftTimer = 0; p.craftPile = null;
+  g.stats.craftCancel++;
+  g.events.push({ t: g.t, type: 'craftCancel', id: p.id, reason });
+}
+
+function finishCraft(g, p) {
+  addSnowballs(p, C.craft.yield);
+  const pile = g.piles.find((pl) => pl.id === p.craftPile);
+  if (pile) pile.cooldownUntil = g.t + C.map.pileCooldown;
+  p.crafting = false; p.craftTimer = 0; p.craftPile = null;
+  g.stats.craftDone++;
+  g.events.push({ t: g.t, type: 'craftDone', id: p.id });
+}
+
+// ---- throwing ------------------------------------------------------------
+// charge 0..1 -> range. Returns snowball or null.
+export function throwSnowball(g, p, aim, charge01) {
+  if (!p.alive || p.crafting || p.snowballs <= 0) return null;
+  addSnowballs(p, -1);
+  const range = C.throw.minRange + (C.throw.maxRange - C.throw.minRange) * Math.max(0, Math.min(1, charge01));
+  const sb = {
+    id: uid(), ownerId: p.id, isNpc: p.isNpc,
+    x: p.x, y: p.y, dirX: Math.cos(aim), dirY: Math.sin(aim),
+    traveled: 0, range, speed: C.throw.speed, dead: false,
+  };
+  g.snowballs.push(sb);
+  g.stats.throws++;
+  g.events.push({ t: g.t, type: 'throw', id: p.id, charge: charge01 });
+  return sb;
+}
+
+// charge from held ms
+export function chargeFromMs(ms) {
+  const clamped = Math.max(C.throw.minChargeMs, Math.min(C.throw.maxChargeMs, ms));
+  return (clamped - C.throw.minChargeMs) / (C.throw.maxChargeMs - C.throw.minChargeMs);
+}
+export function rangeForCharge(charge01) {
+  return C.throw.minRange + (C.throw.maxRange - C.throw.minRange) * Math.max(0, Math.min(1, charge01));
+}
+
+// ---- walls & decoys ------------------------------------------------------
+export function buildWall(g, p) {
+  if (!p.alive || p.crafting || p.snowballs < C.wall.cost || p.walls >= C.wall.maxPerPlayer) return null;
+  addSnowballs(p, -C.wall.cost);
+  const wx = p.x + Math.cos(p.aim) * C.wall.dist;
+  const wy = p.y + Math.sin(p.aim) * C.wall.dist;
+  const wall = { id: uid(), ownerId: p.id, x: wx, y: wy, angle: p.aim + Math.PI / 2, hp: C.wall.durability, decayAt: g.t + C.wall.decaySec };
+  g.walls.push(wall); p.walls++;
+  g.stats.wallsBuilt++;
+  g.events.push({ t: g.t, type: 'wall', id: p.id });
+  return wall;
+}
+
+export function placeDecoy(g, p) {
+  if (!p.alive || p.crafting || p.snowballs < C.decoy.cost || p.decoys >= C.decoy.maxPerPlayer) return null;
+  addSnowballs(p, -C.decoy.cost);
+  const dx = p.x + Math.cos(p.aim) * C.decoy.dist;
+  const dy = p.y + Math.sin(p.aim) * C.decoy.dist;
+  const decoy = { id: uid(), ownerId: p.id, x: dx, y: dy, until: g.t + C.decoy.lureSec, alive: true };
+  g.decoys.push(decoy); p.decoys++;
+  g.stats.decoys++;
+  g.events.push({ t: g.t, type: 'decoy', id: p.id });
+  return decoy;
+}
+
+// segment-point distance for wall blocking
+function wallBlocks(wall, x0, y0, x1, y1) {
+  // treat wall as a segment centered at (x,y) length wall.len along angle
+  const half = C.wall.len / 2;
+  const ax = wall.x + Math.cos(wall.angle) * half, ay = wall.y + Math.sin(wall.angle) * half;
+  const bx = wall.x - Math.cos(wall.angle) * half, by = wall.y - Math.sin(wall.angle) * half;
+  return segIntersect(x0, y0, x1, y1, ax, ay, bx, by);
+}
+function segIntersect(x1, y1, x2, y2, x3, y3, x4, y4) {
+  const d = (x2 - x1) * (y4 - y3) - (y2 - y1) * (x4 - x3);
+  if (Math.abs(d) < 1e-9) return false;
+  const t = ((x3 - x1) * (y4 - y3) - (y3 - y1) * (x4 - x3)) / d;
+  const u = ((x3 - x1) * (y2 - y1) - (y3 - y1) * (x2 - x1)) / d;
+  return t >= 0 && t <= 1 && u >= 0 && u <= 1;
+}
+
+// ---- simulation step -----------------------------------------------------
+export function step(g, dt) {
+  if (g.over) return;
+  g.t += dt;
+
+  // zone shrink
+  if (g.t >= g.zone.nextShrink && g.zone.radius > C.zone.finalRadius) {
+    g.zone.radius = Math.max(C.zone.finalRadius, g.zone.radius * (1 - C.zone.shrinkStep * 0.5));
+    g.zone.nextShrink = g.t + C.zone.intervalSec;
+    g.zone.shrinks++;
+    g.events.push({ t: g.t, type: 'zoneShrink', radius: g.zone.radius });
+  }
+
+  // players
+  for (const p of g.players) {
+    if (!p.alive) continue;
+    // crafting countdown
+    if (p.crafting) {
+      p.craftTimer -= dt;
+      if (p.craftTimer <= 0) finishCraft(g, p);
+    }
+    // NPC brain
+    if (p.isNpc) npcThink(g, p, dt);
+    // zone damage
+    const distFromCenter = Math.hypot(p.x - g.zone.cx, p.y - g.zone.cy);
+    if (distFromCenter > g.zone.radius) {
+      const dmg = C.zone.dps * dt;
+      const before = p.hp;
+      setHp(g, p, p.hp - dmg);
+      g.stats.zoneDamageTicks++;
+      g.stats.zoneDamageTotal += before - p.hp;
+    }
+    // decay walls owned counts recomputed below
+  }
+
+  // snowballs travel + collision
+  for (const sb of g.snowballs) {
+    if (sb.dead) continue;
+    const stepDist = sb.speed * dt;
+    const nx = sb.x + sb.dirX * stepDist, ny = sb.y + sb.dirY * stepDist;
+    // wall collision — a low (1.2m) wall blocks most but not all shots; a
+    // fraction arc over it, so pure turtling can still be punished.
+    let blocked = false;
+    for (const w of g.walls) {
+      if (w.ownerId === sb.ownerId) continue;
+      if (wallBlocks(w, sb.x, sb.y, nx, ny)) {
+        if (g.rng() < C.wall.blockChance) { w.hp--; blocked = true; if (w.hp <= 0) w.dead = true; }
+        break;
+      }
+    }
+    if (blocked) { sb.dead = true; continue; }
+    // decoy collision (lures/destroys)
+    let hitDecoy = false;
+    for (const d of g.decoys) {
+      if (!d.alive || d.ownerId === sb.ownerId) continue;
+      if (Math.hypot(d.x - nx, d.y - ny) < 14) { d.alive = false; hitDecoy = true; break; }
+    }
+    if (hitDecoy) { sb.dead = true; continue; }
+    // player collision
+    for (const p of g.players) {
+      if (!p.alive || p.id === sb.ownerId) continue;
+      if (Math.hypot(p.x - nx, p.y - ny) < C.player.radius + C.throw.radius) {
+        const dealt = damage(g, p, C.throw.damage, sb.ownerId);
+        if (dealt > 0) { g.stats.hits++; g.kills[sb.ownerId] = (g.kills[sb.ownerId] || 0); }
+        if (p.crafting) cancelCraft(g, p, 'hit');
+        if (!p.alive) { g.kills[sb.ownerId] = (g.kills[sb.ownerId] || 0) + 1; g.events.push({ t: g.t, type: 'kill', by: sb.ownerId, victim: p.id }); }
+        sb.dead = true;
+        break;
+      }
+    }
+    sb.x = nx; sb.y = ny; sb.traveled += stepDist;
+    if (sb.traveled >= sb.range) sb.dead = true;
+  }
+  g.snowballs = g.snowballs.filter((s) => !s.dead);
+
+  // cleanup walls (durability, decay, out-of-zone)
+  for (const w of g.walls) {
+    if (w.dead) continue;
+    if (g.t >= w.decayAt) w.dead = true;
+  }
+  g.walls = g.walls.filter((w) => !w.dead);
+  g.decoys = g.decoys.filter((d) => d.alive && d.until > g.t - 0.001 ? true : (d.until > g.t));
+  g.decoys = g.decoys.filter((d) => d.alive && d.until > g.t);
+
+  // recompute per-player wall/decoy counts
+  const wc = {}, dc = {};
+  for (const w of g.walls) wc[w.ownerId] = (wc[w.ownerId] || 0) + 1;
+  for (const d of g.decoys) dc[d.ownerId] = (dc[d.ownerId] || 0) + 1;
+  for (const p of g.players) { p.walls = wc[p.id] || 0; p.decoys = dc[p.id] || 0; }
+
+  if (g.phase === 'drop' && g.t > 0) g.phase = 'play';
+}
+
+// ---- player movement (called by input/NPC) ------------------------------
+export function movePlayer(g, p, mvx, mvy, dt) {
+  if (!p.alive || p.crafting) return;
+  const spd = C.player.speed * (p.cover ? C.player.coverSpeedMul : 1) * dt;
+  const len = Math.hypot(mvx, mvy) || 1;
+  p.x = Math.max(0, Math.min(C.map.size, p.x + (mvx / len) * spd));
+  p.y = Math.max(0, Math.min(C.map.size, p.y + (mvy / len) * spd));
+}
+
+// ---- NPC AI state machine ------------------------------------------------
+// PATROL -> SEEK_PILE -> CRAFT -> ATTACK -> RETREAT -> ZONE_MOVE
+export function npcThink(g, p, dt) {
+  const diff = C.npcDifficulty[p.diff] || C.npcDifficulty.normal;
+  const ai = p.npc;
+  ai.reactTimer -= dt;
+
+  // zone safety first
+  const distCenter = Math.hypot(p.x - g.zone.cx, p.y - g.zone.cy);
+  if (distCenter > g.zone.radius * 0.97) {
+    if (p.crafting) cancelCraft(g, p, 'zone');
+    const ang = Math.atan2(g.zone.cy - p.y, g.zone.cx - p.x);
+    movePlayer(g, p, Math.cos(ang), Math.sin(ang), dt);
+    ai.state = 'ZONE_MOVE';
+    return;
+  }
+
+  // warmup: no attacking human in first warmupSec
+  const canAttackHuman = g.t >= C.match.warmupSec;
+
+  // if crafting, just wait
+  if (p.crafting) return;
+
+  // find target enemy (nearest alive other, prefer decoys as lure)
+  let target = null, td = Infinity;
+  for (const d of g.decoys) {
+    if (!d.alive || d.ownerId === p.id) continue;
+    const dd = Math.hypot(d.x - p.x, d.y - p.y);
+    if (dd < td && dd < C.throw.maxRange) { td = dd; target = { x: d.x, y: d.y, decoy: true }; }
+  }
+  if (!target) {
+    for (const o of g.players) {
+      if (!o.alive || o.id === p.id) continue;
+      if (o.isHuman && !canAttackHuman) continue;
+      const dd = Math.hypot(o.x - p.x, o.y - p.y);
+      if (dd < td) { td = dd; target = { x: o.x, y: o.y, ref: o }; }
+    }
+  }
+
+  // low/no ammo -> flee from a nearby threat first, else craft/seek pile.
+  if (p.snowballs < diff.craftThreshold) {
+    if (target && td < C.match.fleeRange) {
+      // disengage: run away from threat (reduces early bloodbath & lengthens matches)
+      const a = Math.atan2(p.y - target.y, p.x - target.x);
+      movePlayer(g, p, Math.cos(a), Math.sin(a), dt); ai.state = 'RETREAT'; return;
+    }
+    const pile = nearestPile(g, p);
+    if (pile) { startCraft(g, p); ai.state = 'CRAFT'; return; }
+    const sp = seekPile(g, p);
+    if (sp) { const a = Math.atan2(sp.y - p.y, sp.x - p.x); movePlayer(g, p, Math.cos(a), Math.sin(a), dt); ai.state = 'SEEK_PILE'; return; }
+  }
+
+  // engage target — only within the tighter engageRange (not full throw range),
+  // so NPCs don't snipe across the whole map at the start (paces the match).
+  if (target && td < C.match.engageRange && p.snowballs > 0) {
+    const a = Math.atan2(target.y - p.y, target.x - p.x);
+    p.aim = a;
+    if (ai.reactTimer <= 0 && g.rng() < diff.aggro) {
+      // accuracy: perturb aim by error inversely to accuracy
+      const err = (1 - diff.accuracy) * 0.5;
+      const aimErr = g.rng.range(-err, err);
+      const charge = Math.min(1, td / C.throw.maxRange);
+      throwSnowball(g, p, a + aimErr, charge);
+      ai.reactTimer = diff.reactSec;
+    }
+    // keep some distance: back off if too close, hold if mid-range
+    if (td < C.match.engageRange * 0.4) movePlayer(g, p, -Math.cos(a), -Math.sin(a), dt);
+    ai.state = 'ATTACK';
+    return;
+  }
+
+  // patrol toward center-ish / wander
+  if (!ai.moveTx || Math.hypot(ai.moveTx - p.x, ai.moveTy - p.y) < 20) {
+    ai.moveTx = g.rng.range(0, C.map.size); ai.moveTy = g.rng.range(0, C.map.size);
+  }
+  const a = Math.atan2(ai.moveTy - p.y, ai.moveTx - p.x);
+  movePlayer(g, p, Math.cos(a), Math.sin(a), dt);
+  ai.state = 'PATROL';
+}
+
+function seekPile(g, p) {
+  let best = null, bd = Infinity;
+  for (const pile of g.piles) {
+    if (pile.cooldownUntil > g.t) continue;
+    const d = Math.hypot(pile.x - p.x, pile.y - p.y);
+    if (d < bd) { bd = d; best = pile; }
+  }
+  return best;
+}
+
+// ---- result / grade ------------------------------------------------------
+export function humanPlacement(g) {
+  const human = humanPlayer(g);
+  if (!human) return null;
+  // placementOrder is elimination order (first out = last place). winner appended last.
+  const idx = g.placementOrder.indexOf(human.id);
+  if (idx < 0) return null;
+  return g.players.length - idx; // 1 = winner
+}
+
+export function result(g) {
+  const human = humanPlayer(g);
+  const place = humanPlacement(g);
+  return {
+    won: g.won,
+    place,
+    total: g.players.length,
+    kills: human ? (g.kills[human.id] || 0) : 0,
+    survivedSec: g.t,
+    stats: g.stats,
+  };
+}
+
+// ---- save / load ---------------------------------------------------------
+export function serialize(g) {
+  return JSON.stringify({
+    seed: g.seed, t: g.t, phase: g.phase, over: g.over, won: g.won,
+    difficulty: g.difficulty,
+    players: g.players, snowballs: g.snowballs, walls: g.walls, decoys: g.decoys,
+    piles: g.piles, zone: g.zone, placementOrder: g.placementOrder, kills: g.kills,
+    _humanId: g._humanId, stats: g.stats,
+  });
+}
+export function deserialize(json) {
+  const d = typeof json === 'string' ? JSON.parse(json) : json;
+  const g = { rng: makeRng(d.seed), events: [] };
+  Object.assign(g, d);
+  return g;
+}
+
+export { C as CONFIG, SKINS, actForSurvivors };
