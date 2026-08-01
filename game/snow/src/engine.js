@@ -38,7 +38,7 @@ export function createGame(seed = 42, opts = {}) {
   return g;
 }
 
-// Heal packs & shields scattered on the map. Taken → respawn after cooldown.
+// Heal packs, shields, and pills scattered on the map. Taken → respawn after cooldown.
 function spawnPickups(g) {
   const m = C.map.size;
   for (let i = 0; i < C.items.healSpawn; i++) {
@@ -47,6 +47,53 @@ function spawnPickups(g) {
   for (let i = 0; i < C.items.shieldSpawn; i++) {
     g.pickups.push({ id: uid(), kind: 'shield', x: g.rng.range(80, m - 80), y: g.rng.range(80, m - 80), takenUntil: 0 });
   }
+  for (let i = 0; i < C.items.pill.spawn; i++) {
+    g.pickups.push({ id: uid(), kind: 'pill', x: g.rng.range(80, m - 80), y: g.rng.range(80, m - 80), takenUntil: 0 });
+  }
+}
+
+// Roll a pill buff. Machine gun is the jackpot; the rest are timed multipliers.
+export function rollPillBuff(g) {
+  const P = C.items.pill;
+  if (g.rng() < P.mgChance) return { kind: 'mg', ammo: P.mgAmmo };
+  const roll = g.rng();
+  if (roll < 1 / 3) return { kind: 'speed', mul: P.speedMul };
+  if (roll < 2 / 3) return { kind: 'power', mul: P.powerMul };
+  return { kind: 'craft', mul: P.craftMul };
+}
+
+export function applyPillBuff(g, p, buff) {
+  if (buff.kind === 'mg') {
+    p.mg = { ammo: buff.ammo, until: g.t + C.items.pill.durationSec, fireCd: 0 };
+  } else {
+    p.buff = { kind: buff.kind, mul: buff.mul, until: g.t + C.items.pill.durationSec };
+  }
+  g.events.push({ t: g.t, type: 'pill', id: p.id, buff: buff.kind });
+  return buff;
+}
+
+// active buff multiplier helpers (base mods × timed pill buff)
+export function buffMul(g, p, kind) {
+  return p.buff && p.buff.kind === kind && p.buff.until > g.t ? p.buff.mul : 1;
+}
+
+// Snow machine gun: straight-line (no arc), fast, fires while held.
+// Uses its own ammo pool, not crafted snowballs. Returns projectile or null.
+export function fireMachineGun(g, p, aim) {
+  const P = C.items.pill;
+  if (!p.alive || p.crafting || !p.mg || p.mg.until <= g.t || p.mg.ammo <= 0 || p.mg.fireCd > 0) return null;
+  p.mg.ammo--;
+  p.mg.fireCd = P.mgFireInterval;
+  const sb = {
+    id: uid(), ownerId: p.id, isNpc: p.isNpc,
+    x: p.x, y: p.y, dirX: Math.cos(aim), dirY: Math.sin(aim),
+    traveled: 0, range: C.throw.maxRange * 1.1, speed: P.mgSpeed, dead: false,
+    dmgMul: (p.mods && p.mods.damage) || 1, flat: true, // flat = straight line, no arc
+  };
+  g.snowballs.push(sb);
+  g.stats.throws++;
+  if (p.mg.ammo <= 0) p.mg = null; // spent
+  return sb;
 }
 
 // Apply a class (character trait choice) to a player — multipliers used by
@@ -86,6 +133,12 @@ export function tryPickup(g, p) {
       it.x = g.rng.range(80, C.map.size - 80); it.y = g.rng.range(80, C.map.size - 80);
       g.events.push({ t: g.t, type: 'shield', id: p.id });
       return 'shield';
+    }
+    if (it.kind === 'pill') {
+      const buff = applyPillBuff(g, p, rollPillBuff(g));
+      it.takenUntil = g.t + C.items.pill.respawnSec;
+      it.x = g.rng.range(80, C.map.size - 80); it.y = g.rng.range(80, C.map.size - 80);
+      return { kind: 'pill', buff };
     }
   }
   return null;
@@ -230,7 +283,7 @@ export function startCraft(g, p) {
   if (!p.alive || p.crafting) return false;
   const pile = nearestPile(g, p);
   if (!pile) return false;
-  p.crafting = true; p.craftTimer = C.craft.seconds * ((p.mods && p.mods.craftSec) || 1); p.craftPile = pile.id;
+  p.crafting = true; p.craftTimer = C.craft.seconds * ((p.mods && p.mods.craftSec) || 1) * buffMul(g, p, 'craft'); p.craftPile = pile.id;
   g.stats.craftAttempts++;
   g.events.push({ t: g.t, type: 'craftStart', id: p.id });
   return true;
@@ -262,7 +315,7 @@ export function throwSnowball(g, p, aim, charge01) {
     id: uid(), ownerId: p.id, isNpc: p.isNpc,
     x: p.x, y: p.y, dirX: Math.cos(aim), dirY: Math.sin(aim),
     traveled: 0, range, speed: C.throw.speed, dead: false,
-    dmgMul: (p.mods && p.mods.damage) || 1,
+    dmgMul: ((p.mods && p.mods.damage) || 1) * buffMul(g, p, 'power'),
   };
   g.snowballs.push(sb);
   g.stats.throws++;
@@ -357,6 +410,12 @@ export function step(g, dt) {
       p.z = Math.max(0, p.z + p.vz * dt);
       if (p.z === 0 && p.vz < 0) p.vz = 0;
     }
+    // machine gun cooldown tick + expiry
+    if (p.mg) {
+      if (p.mg.fireCd > 0) p.mg.fireCd -= dt;
+      if (p.mg.until <= g.t) p.mg = null;
+    }
+    if (p.buff && p.buff.until <= g.t) p.buff = null;
     // crafting countdown
     if (p.crafting) {
       p.craftTimer -= dt;
@@ -444,7 +503,7 @@ export function step(g, dt) {
 // ---- player movement (called by input/NPC) ------------------------------
 export function movePlayer(g, p, mvx, mvy, dt) {
   if (!p.alive || p.crafting) return;
-  const spd = C.player.speed * ((p.mods && p.mods.speed) || 1) * (p.cover ? C.player.coverSpeedMul : 1) * dt;
+  const spd = C.player.speed * ((p.mods && p.mods.speed) || 1) * buffMul(g, p, 'speed') * (p.cover ? C.player.coverSpeedMul : 1) * dt;
   const len = Math.hypot(mvx, mvy) || 1;
   let nx = Math.max(0, Math.min(C.map.size, p.x + (mvx / len) * spd));
   let ny = Math.max(0, Math.min(C.map.size, p.y + (mvy / len) * spd));
@@ -482,6 +541,43 @@ export function npcThink(g, p, dt) {
   // if crafting, just wait
   if (p.crafting) return;
 
+  // smart dodge: jump when an enemy snowball is closing in on us
+  if (diff.dodge && p.z <= 0.01 && ai.reactTimer <= 0) {
+    for (const sb of g.snowballs) {
+      if (sb.ownerId === p.id) continue;
+      const dx = p.x - sb.x, dy = p.y - sb.y;
+      const d = Math.hypot(dx, dy);
+      if (d > 120) continue;
+      const closing = (dx * sb.dirX + dy * sb.dirY) / (d || 1); // 1 = heading straight at us
+      if (closing > 0.86 && g.rng() < diff.dodge) { jump(g, p); break; }
+    }
+  }
+
+  // smart item seeking: go for a heal when hurt, a shield/pill opportunistically
+  if (diff.seekItem && g.rng() < 0.02) {
+    const hurt = p.hp < (p.maxHp || 100) * 0.55;
+    let best = null, bd = 240;
+    for (const it of g.pickups) {
+      if (it.takenUntil > g.t) continue;
+      if (it.kind === 'heal' && !hurt) continue;
+      if (it.kind === 'shield' && p.shieldHits > 0) continue;
+      const d = Math.hypot(it.x - p.x, it.y - p.y);
+      const inZone = Math.hypot(it.x - g.zone.cx, it.y - g.zone.cy) < g.zone.radius * 0.95;
+      if (d < bd && inZone && g.rng() < diff.seekItem) { bd = d; best = it; }
+    }
+    if (best) { ai.itemTx = best.x; ai.itemTy = best.y; ai.itemUntil = g.t + 6; }
+  }
+  if (ai.itemUntil > g.t && ai.itemTx != null) {
+    const d = Math.hypot(ai.itemTx - p.x, ai.itemTy - p.y);
+    if (d < 12) { ai.itemUntil = 0; }
+    else {
+      const a = Math.atan2(ai.itemTy - p.y, ai.itemTx - p.x);
+      movePlayer(g, p, Math.cos(a), Math.sin(a), dt);
+      ai.state = 'SEEK_ITEM';
+      return;
+    }
+  }
+
   // find target enemy (nearest alive other, prefer decoys as lure)
   let target = null, td = Infinity;
   for (const d of g.decoys) {
@@ -513,10 +609,14 @@ export function npcThink(g, p, dt) {
 
   // engage target — only within the tighter engageRange (not full throw range),
   // so NPCs don't snipe across the whole map at the start (paces the match).
-  if (target && td < C.match.engageRange && p.snowballs > 0) {
+  if (target && td < C.match.engageRange && (p.snowballs > 0 || (p.mg && p.mg.ammo > 0))) {
     const a = Math.atan2(target.y - p.y, target.x - p.x);
     p.aim = a;
-    if (ai.reactTimer <= 0 && g.rng() < diff.aggro) {
+    // machine gun takes priority: continuous straight fire while it lasts
+    if (p.mg && p.mg.until > g.t && p.mg.ammo > 0) {
+      const err = (1 - diff.accuracy) * 0.22;
+      fireMachineGun(g, p, a + g.rng.range(-err, err));
+    } else if (ai.reactTimer <= 0 && g.rng() < diff.aggro) {
       // accuracy: perturb aim by error inversely to accuracy
       const err = (1 - diff.accuracy) * 0.5;
       const aimErr = g.rng.range(-err, err);
@@ -524,8 +624,14 @@ export function npcThink(g, p, dt) {
       throwSnowball(g, p, a + aimErr, charge);
       ai.reactTimer = diff.reactSec;
     }
-    // keep some distance: back off if too close, hold if mid-range
+    // smarter footwork: strafe sideways while attacking (harder to hit),
+    // back off if too close, hold if mid-range
     if (td < C.match.engageRange * 0.4) movePlayer(g, p, -Math.cos(a), -Math.sin(a), dt);
+    else if (diff.strafe && g.rng() < diff.strafe) {
+      if (ai.strafeDir == null || g.rng() < 0.01) ai.strafeDir = g.rng() < 0.5 ? 1 : -1;
+      const sa = a + (Math.PI / 2) * ai.strafeDir;
+      movePlayer(g, p, Math.cos(sa), Math.sin(sa), dt);
+    }
     ai.state = 'ATTACK';
     return;
   }

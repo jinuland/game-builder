@@ -11,6 +11,12 @@ export const CONFIG = {
     healSpawn: 10, healAmount: 40, healRespawnSec: 50,   // heal packs on the map
     shieldSpawn: 6, shieldHits: 4, shieldRespawnSec: 60, // shield fully blocks the next N hits (durability), then breaks
     pickupRange: 26,
+    // pills: random buff on pickup. Small chance rolls the snow machine gun.
+    pill: {
+      spawn: 8, respawnSec: 55, durationSec: 20,
+      speedMul: 1.35, powerMul: 1.5, craftMul: 0.5,
+      mgChance: 0.12, mgAmmo: 75, mgFireInterval: 0.12, mgSpeed: 540, // straight-line rapid fire
+    },
   },
   craft: { seconds: 3, yield: 10, interactRange: 34 },
   throw: {
@@ -27,10 +33,12 @@ export const CONFIG = {
   match: { total: 20, npc: 19, warmupSec: 45, engageRange: 170, fleeRange: 130, totalOptions: [10, 20, 30, 40] },
   // Low aggro + long reactSec keeps time-to-kill high so ~19 eliminations spread
   // across an 8-12 min match; the closing zone finishes stragglers.
+  // smart* fields: dodge = jump chance when a snowball closes in, strafe = lateral
+  // movement while attacking, seekItem = go for heal/shield/pill when it helps.
   npcDifficulty: {
-    easy:   { accuracy: 0.34, reactSec: 3.4, craftThreshold: 5, aggro: 0.07 },
-    normal: { accuracy: 0.42, reactSec: 2.8, craftThreshold: 6, aggro: 0.09 },
-    hard:   { accuracy: 0.6, reactSec: 2.0, craftThreshold: 7, aggro: 0.15 },
+    easy:   { accuracy: 0.34, reactSec: 3.4, craftThreshold: 5, aggro: 0.07, dodge: 0.15, strafe: 0.3, seekItem: 0.3 },
+    normal: { accuracy: 0.42, reactSec: 2.8, craftThreshold: 6, aggro: 0.09, dodge: 0.3, strafe: 0.55, seekItem: 0.55 },
+    hard:   { accuracy: 0.6, reactSec: 2.0, craftThreshold: 7, aggro: 0.15, dodge: 0.5, strafe: 0.8, seekItem: 0.8 },
   },
   session: { targetMinSec: 8 * 60, targetMaxSec: 12 * 60 },
 };

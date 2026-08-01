@@ -83,3 +83,7 @@ html, body { margin: 0; height: 100%; background: var(--navy); color: var(--whit
 /* shield & class HUD tags */
 .sr-shield { font-size: 13px; font-weight: 800; color: #4d9fff; text-shadow: 0 1px 2px #000; }
 .sr-class-tag { font-size: 11px; color: rgba(245,245,245,0.7); text-shadow: 0 1px 2px #000; }
+/* pill buff HUD tags */
+.sr-buff { font-size: 13px; font-weight: 800; color: #ffd43b; text-shadow: 0 1px 2px #000; }
+.sr-buff-mg { color: #ff8f5a; animation: sr-mg-pulse 0.8s ease-in-out infinite; }
+@keyframes sr-mg-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }

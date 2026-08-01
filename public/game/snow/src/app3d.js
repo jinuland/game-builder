@@ -263,12 +263,19 @@ export class SnowApp {
         const crossMat = new THREE.MeshBasicMaterial({ color: 0xe03131 });
         const c1 = new THREE.Mesh(new THREE.BoxGeometry(6.4, 1.8, 1.8), crossMat); c1.position.y = 9.2; grp.add(c1);
         const c2 = new THREE.Mesh(new THREE.BoxGeometry(1.8, 1.8, 6.4), crossMat); c2.position.y = 9.2; grp.add(c2);
-      } else {
+      } else if (it.kind === 'shield') {
         const disc = new THREE.Mesh(
           new THREE.CylinderGeometry(7, 7, 2.4, 18),
           new THREE.MeshStandardMaterial({ color: 0x4d9fff, emissive: 0x2266cc, emissiveIntensity: 0.7, roughness: 0.3 }),
         );
         disc.position.y = 6; disc.rotation.x = 0.35; grp.add(disc);
+      } else { // pill: two-tone capsule, glowing so it reads as "power-up"
+        const capMatA = new THREE.MeshStandardMaterial({ color: 0xffd43b, emissive: 0xcc9900, emissiveIntensity: 0.55, roughness: 0.35 });
+        const capMatB = new THREE.MeshStandardMaterial({ color: 0xff4d6d, emissive: 0xaa1133, emissiveIntensity: 0.55, roughness: 0.35 });
+        const half1 = new THREE.Mesh(new THREE.CapsuleGeometry(3.2, 3.5, 6, 12), capMatA);
+        half1.rotation.z = Math.PI / 2; half1.position.set(-1.8, 7, 0); grp.add(half1);
+        const half2 = new THREE.Mesh(new THREE.CapsuleGeometry(3.2, 3.5, 6, 12), capMatB);
+        half2.rotation.z = Math.PI / 2; half2.position.set(1.8, 7, 0); grp.add(half2);
       }
       grp.position.set(it.x, 0, it.y);
       s.add(grp);
@@ -439,6 +446,7 @@ export class SnowApp {
       '마우스 — 시점 회전 (위로 밀면 위를 봄 · 타이틀에서 반전 가능)',
       'W A S D — 보는 방향 기준 이동 · Space — 점프(공중에서 눈뭉치 회피) · C — 엄폐(피해 절반)',
       '🛡 방패 아이템 — 들고 있는 동안 피격 완전 방어, 내구도 4회 소진 시 파괴',
+      '💊 알약 — 랜덤 버프 20초: 이동/공격/제작 증가, 낮은 확률로 눈 기관총(75발 연사)',
       '좌클릭 홀드 → 놓기 — 눈뭉치 투척 (오래 누를수록 멀리)',
       'E — 눈더미(반짝이는 흰 둔덕) 앞에서 3초 제작 +10 (무방비!)',
       'Q — 설벽 건설 (4개) · F — 눈사람 미끼 (5개) · M — 지도',
@@ -459,6 +467,12 @@ export class SnowApp {
     this.sceneName = 'drop';
     this.dropT = 0;
     this.dropTarget = { x: this.game.zone.cx + this.game.rng.range(-300, 300), y: this.game.zone.cy + this.game.rng.range(-300, 300) };
+    // everyone drops together: stagger each NPC's fall over the 8s drop window
+    this.dropPlan = new Map();
+    for (const p of this.game.players) {
+      if (p.id === this.game._humanId) continue;
+      this.dropPlan.set(p.id, { delay: this.game.rng.range(0, 2.5), fallSec: this.game.rng.range(3.2, 4.6), sway: this.game.rng.range(0, Math.PI * 2) });
+    }
     this.yaw = 0; this.pitch = -0.15;
     this.killFeed = [];
     this.overlay.style.display = 'none'; this.overlay.innerHTML = '';
@@ -550,7 +564,9 @@ export class SnowApp {
     });
     this.canvas.addEventListener('mouseup', () => {
       if (this.sceneName === 'play' && this.locked && this.mouse.down) {
-        this._throw(performance.now() - this.mouse.downAt);
+        const h = this.human, g = this.game;
+        // while the machine gun is active the button sprays instead of charging
+        if (!(h && h.mg && g && h.mg.until > g.t && h.mg.ammo > 0)) this._throw(performance.now() - this.mouse.downAt);
         this.mouse.down = false;
       }
     });
@@ -610,6 +626,10 @@ export class SnowApp {
         this.bobT += dt * 9;
       }
     }
+    // snow machine gun: hold left mouse to spray (straight-line, own ammo pool)
+    if (h.alive && !h.crafting && h.mg && h.mg.until > g.t && h.mg.ammo > 0 && this.mouse.down && this.locked) {
+      if (E.fireMachineGun(g, h, this.yaw)) { this.audio.throw(); this.viewKick = 0.4; }
+    }
     const beforeHp = h.hp, beforeCraft = h.crafting, beforeAlive = h.alive;
     const killsBefore = g.kills[h.id] || 0;
     const hitsBefore = g.stats.hits;
@@ -640,6 +660,15 @@ export class SnowApp {
       const got = E.tryPickup(g, h);
       if (got === 'heal') { this.audio.craftDone(); this._toast(`💊 힐팩 +${C.items.healAmount} HP`); }
       if (got === 'shield') { this.audio.wall(); this._toast(`🛡 방패 획득 — 다음 ${C.items.shieldHits}회 피격 완전 방어 (내구도 ${C.items.shieldHits})`); }
+      if (got && got.kind === 'pill') {
+        this.audio.fanfare();
+        const b = got.buff;
+        const msg = b.kind === 'mg' ? `💊🔥 눈 기관총!! ${C.items.pill.mgAmmo}발 · ${C.items.pill.durationSec}초 — 좌클릭 홀드로 연사`
+          : b.kind === 'speed' ? `💊 알약: 이동속도 +${Math.round((b.mul - 1) * 100)}% (${C.items.pill.durationSec}초)`
+          : b.kind === 'power' ? `💊 알약: 공격력 +${Math.round((b.mul - 1) * 100)}% (${C.items.pill.durationSec}초)`
+          : `💊 알약: 제작속도 2배 (${C.items.pill.durationSec}초)`;
+        this._toast(msg, 4200);
+      }
     }
     if (this.viewKick > 0) this.viewKick = Math.max(0, this.viewKick - dt * 4);
     if (g.over) this._showResult();
@@ -725,8 +754,11 @@ export class SnowApp {
       if (!m) {
         m = new THREE.Group();
         const ball = new THREE.Mesh(
-          new THREE.SphereGeometry(3.4, 12, 10),
-          new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xbfe6ff, emissiveIntensity: 0.9, roughness: 0.4 }),
+          new THREE.SphereGeometry(sb.flat ? 2.4 : 3.4, 12, 10),
+          new THREE.MeshStandardMaterial({
+            color: 0xffffff,
+            emissive: sb.flat ? 0xffe08a : 0xbfe6ff, emissiveIntensity: sb.flat ? 1.3 : 0.9, roughness: 0.4,
+          }),
         );
         m.add(ball);
         // trail: small fading spheres
@@ -744,8 +776,8 @@ export class SnowApp {
         this.sbMeshes.set(sb.id, m);
       }
       const t01 = sb.range > 0 ? sb.traveled / sb.range : 0;
-      const apex = Math.min(60, sb.range * 0.16);
-      const z = Math.max(0, 4 * apex * t01 * (1 - t01)) + 12;
+      const apex = sb.flat ? 0 : Math.min(60, sb.range * 0.16); // MG rounds fly straight
+      const z = Math.max(0, 4 * apex * t01 * (1 - t01)) + (sb.flat ? EYE - 2 : 12);
       m.position.set(sb.x, z, sb.y);
       // update trail from history
       const hist = m.userData.hist;
@@ -878,6 +910,28 @@ export class SnowApp {
     // sync FIRST (it resets the camera to eye height), then aim the aerial cam.
     const g = this.game;
     this._sync3d(now);
+    // co-drop: NPCs fall from the sky on their own staggered schedules,
+    // swaying like parachutists, and land during the 8s drop window
+    if (this.dropPlan) {
+      for (const p of g.players) {
+        if (p.id === g._humanId || !p.alive) continue;
+        const plan = this.dropPlan.get(p.id);
+        const fig = this.actors.get(p.id);
+        if (!plan || !fig) continue;
+        const ft = (this.dropT - plan.delay) / plan.fallSec; // 0..1 fall progress
+        if (ft < 1) {
+          const fallY = ft <= 0 ? 620 : 620 * (1 - ft) * (1 - ft); // ease-in landing
+          const sway = Math.sin(now / 500 + plan.sway) * 14 * Math.max(0, 1 - ft);
+          fig.position.y = fallY + 0.01;
+          fig.position.x = p.x + sway;
+          fig.rotation.z = Math.sin(now / 400 + plan.sway) * 0.18 * Math.max(0, 1 - ft);
+          const hpS = this.hpSprites && this.hpSprites.get(p.id);
+          if (hpS) hpS.visible = false; // no HP bars while airborne
+        } else {
+          fig.rotation.z = 0;
+        }
+      }
+    }
     const t01 = Math.min(1, this.dropT / 8);
     const alt = 520 - t01 * 470;
     const tx = this.dropTarget ? this.dropTarget.x : g.zone.cx;
@@ -901,7 +955,7 @@ export class SnowApp {
     ctx.beginPath(); ctx.arc(g.zone.cx * zoom + ox, g.zone.cy * zoom + oy, g.zone.radius * zoom, 0, Math.PI * 2);
     ctx.strokeStyle = '#7fd4ff'; ctx.lineWidth = 2; ctx.stroke();
     for (const p of g.piles) { ctx.fillStyle = 'rgba(255,255,255,0.95)'; ctx.fillRect(p.x * zoom + ox - 1, p.y * zoom + oy - 1, 3, 3); }
-    for (const it of g.pickups) { ctx.fillStyle = it.kind === 'heal' ? '#ff6b6b' : '#4d9fff'; ctx.fillRect(it.x * zoom + ox - 1.5, it.y * zoom + oy - 1.5, 3.5, 3.5); }
+    for (const it of g.pickups) { ctx.fillStyle = it.kind === 'heal' ? '#ff6b6b' : it.kind === 'shield' ? '#4d9fff' : '#ffd43b'; ctx.fillRect(it.x * zoom + ox - 1.5, it.y * zoom + oy - 1.5, 3.5, 3.5); }
     if (this.dropTarget) {
       const px = this.dropTarget.x * zoom + ox, py = this.dropTarget.y * zoom + oy;
       ctx.strokeStyle = '#FF6B35'; ctx.lineWidth = 3;
@@ -1056,6 +1110,11 @@ export class SnowApp {
     hpWrap.appendChild(hpFill); hpWrap.appendChild(el('span', 'sr-hp-txt', `${Math.max(0, Math.round(h.hp))}/${maxHp}`));
     bl.appendChild(hpWrap);
     if (h.shieldHits > 0) bl.appendChild(el('div', 'sr-shield', `🛡 방패 내구도 ${h.shieldHits}/${C.items.shieldHits} — 피격 완전 방어`));
+    if (h.mg && h.mg.until > g.t && h.mg.ammo > 0) bl.appendChild(el('div', 'sr-buff sr-buff-mg', `🔥 눈 기관총 ${h.mg.ammo}발 · ${Math.ceil(h.mg.until - g.t)}초`));
+    if (h.buff && h.buff.until > g.t) {
+      const label = h.buff.kind === 'speed' ? '💨 이동속도 증가' : h.buff.kind === 'power' ? '💪 공격력 증가' : '⚒ 제작속도 증가';
+      bl.appendChild(el('div', 'sr-buff', `${label} ${Math.ceil(h.buff.until - g.t)}초`));
+    }
     const cls = CLASSES[h.classId];
     if (cls) bl.appendChild(el('div', 'sr-class-tag', cls.name));
     if (this.sceneName === 'drop') bl.appendChild(el('div', 'sr-drop', `낙하 중 — 착지 ${Math.max(0, Math.ceil(8 - this.dropT))}s (지도 클릭=낙하 지점)`));

@@ -234,7 +234,7 @@ test('TC-022 movePlayer blocked during crafting', () => {
 });
 
 // ---- v3 features: pickups, shield, classes, pile respawn -------------------
-import { tryPickup, applyClass, jump } from '../src/engine.js';
+import { tryPickup, applyClass, jump, rollPillBuff, applyPillBuff, fireMachineGun, buffMul, npcThink } from '../src/engine.js';
 import { CLASSES } from '../src/config.js';
 
 test('TC-023 heal pack restores hp and goes on cooldown', () => {
@@ -329,4 +329,94 @@ test('TC-028 sniper damage multiplier travels with the snowball', () => {
   const h = human(g); addSnowballs(h, 1);
   const sb = throwSnowball(g, h, 0, 1);
   assert.ok(Math.abs(sb.dmgMul - CLASSES.white.damageMul) < 0.001);
+});
+
+test('TC-030 pill spawns exist and grant a timed buff on pickup', () => {
+  const g = createGame(1, { total: 2 });
+  assert.equal(g.pickups.filter((i) => i.kind === 'pill').length, C.items.pill.spawn);
+  const p = human(g);
+  g.pickups = [{ id: 1, kind: 'pill', x: p.x, y: p.y, takenUntil: 0 }];
+  const got = tryPickup(g, p);
+  assert.equal(got.kind, 'pill');
+  assert.ok(got.buff.kind, 'a buff was rolled');
+  const active = (p.buff && p.buff.until > g.t) || (p.mg && p.mg.until > g.t);
+  assert.ok(active, 'buff or mg is active');
+  assert.ok(g.pickups[0].takenUntil > g.t, 'pill on respawn cooldown');
+});
+
+test('TC-031 pill buffs actually change speed/power/craft and expire', () => {
+  const g = createGame(1, { total: 2 });
+  const p = human(g);
+  // speed
+  applyPillBuff(g, p, { kind: 'speed', mul: C.items.pill.speedMul });
+  const x0 = p.x; movePlayer(g, p, 1, 0, 1);
+  const buffedDist = p.x - x0;
+  assert.ok(Math.abs(buffedDist - C.player.speed * C.items.pill.speedMul) < 1, `speed dist ${buffedDist}`);
+  // power
+  applyPillBuff(g, p, { kind: 'power', mul: C.items.pill.powerMul });
+  addSnowballs(p, 1);
+  const sb = throwSnowball(g, p, 0, 1);
+  assert.ok(Math.abs(sb.dmgMul - C.items.pill.powerMul) < 0.001, `dmgMul ${sb.dmgMul}`);
+  // craft
+  applyPillBuff(g, p, { kind: 'craft', mul: C.items.pill.craftMul });
+  g.piles.push({ id: 9, x: p.x, y: p.y, cooldownUntil: 0 });
+  startCraft(g, p);
+  assert.ok(Math.abs(p.craftTimer - C.craft.seconds * C.items.pill.craftMul) < 0.01, `craft ${p.craftTimer}`);
+  cancelCraft(g, p);
+  // expiry
+  p.buff.until = g.t - 1;
+  assert.equal(buffMul(g, p, 'craft'), 1, 'expired buff is inert');
+});
+
+test('TC-032 machine gun: 75 rounds, straight-line, own ammo, rate-limited', () => {
+  const g = createGame(1, { total: 2 });
+  const p = human(g);
+  applyPillBuff(g, p, { kind: 'mg', ammo: C.items.pill.mgAmmo });
+  assert.equal(p.mg.ammo, 75);
+  const sb = fireMachineGun(g, p, 0);
+  assert.ok(sb, 'fires');
+  assert.equal(sb.flat, true, 'straight-line round');
+  assert.ok(sb.speed > C.throw.speed, 'faster than a thrown ball');
+  assert.equal(p.snowballs, 0, 'does not consume crafted snowballs');
+  assert.equal(p.mg.ammo, 74);
+  assert.equal(fireMachineGun(g, p, 0), null, 'rate limited while fireCd > 0');
+  step(g, C.items.pill.mgFireInterval + 0.01);
+  assert.ok(fireMachineGun(g, p, 0), 'fires again after cooldown');
+  // spend all ammo -> mg gone
+  p.mg.ammo = 1; p.mg.fireCd = 0;
+  fireMachineGun(g, p, 0);
+  assert.equal(p.mg, null, 'mg removed when ammo spent');
+});
+
+test('TC-033 mg expires after duration', () => {
+  const g = createGame(1, { total: 2 });
+  const p = human(g);
+  applyPillBuff(g, p, { kind: 'mg', ammo: 75 });
+  for (let i = 0; i < (C.items.pill.durationSec + 1) * 4; i++) step(g, 0.25);
+  assert.equal(p.mg, null, 'mg expired');
+});
+
+test('TC-034 smart NPC: dodges an incoming snowball with a jump (hard diff)', () => {
+  const g = createGame(3, { total: 2, difficulty: 'hard' });
+  const npc = g.players[1];
+  npc.x = 400; npc.y = 400; npc.npc.reactTimer = 0;
+  // a snowball heading straight at the NPC, close by
+  g.snowballs.push({ id: 999, ownerId: g.players[0].id, isNpc: false, x: 340, y: 400, dirX: 1, dirY: 0, traveled: 0, range: 400, speed: 320, dead: false, dmgMul: 1 });
+  let jumped = false;
+  for (let i = 0; i < 40 && !jumped; i++) { npcThink(g, npc, 0.05); if (npc.z > 0) jumped = true; g.snowballs[0] && (g.snowballs[0].x = 340); }
+  assert.ok(jumped, 'NPC jumped to dodge');
+});
+
+test('TC-035 smart NPC: hurt bot seeks a heal pack', () => {
+  const g = createGame(5, { total: 2, difficulty: 'hard' });
+  const npc = g.players[1];
+  npc.x = 600; npc.y = 600; setHp(g, npc, 30);
+  g.pickups = [{ id: 1, kind: 'heal', x: 660, y: 600, takenUntil: 0 }];
+  g.snowballs = [];
+  let sought = false;
+  for (let i = 0; i < 400 && !sought; i++) {
+    npcThink(g, npc, 0.05);
+    if (npc.npc.state === 'SEEK_ITEM') sought = true;
+  }
+  assert.ok(sought, 'NPC moved toward the heal pack');
 });
