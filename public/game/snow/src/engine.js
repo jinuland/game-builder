@@ -398,8 +398,14 @@ export function step(g, dt) {
       g.events.push({ t: g.t, type: 'pileRespawn', id: pile.id });
     }
   }
-  // NPCs auto-pickup items they walk over
-  for (const p of g.players) { if (p.alive && p.isNpc) tryPickup(g, p); }
+  // NPCs pick up items only when deliberately seeking one (or a rare accidental
+  // grab) — otherwise bots hoover up every pill/shield before the player can
+  for (const p of g.players) {
+    if (!p.alive || !p.isNpc) continue;
+    const ai = p.npc;
+    const seeking = ai && ai.itemUntil > g.t;
+    if (seeking || g.rng() < 0.003) tryPickup(g, p);
+  }
 
   // players
   for (const p of g.players) {

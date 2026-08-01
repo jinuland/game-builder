@@ -13,9 +13,9 @@ export const CONFIG = {
     pickupRange: 26,
     // pills: random buff on pickup. Small chance rolls the snow machine gun.
     pill: {
-      spawn: 8, respawnSec: 55, durationSec: 20,
+      spawn: 14, respawnSec: 45, durationSec: 20,
       speedMul: 1.35, powerMul: 1.5, craftMul: 0.5,
-      mgChance: 0.12, mgAmmo: 75, mgFireInterval: 0.12, mgSpeed: 540, // straight-line rapid fire
+      mgChance: 0.18, mgAmmo: 75, mgFireInterval: 0.12, mgSpeed: 540, // straight-line rapid fire
     },
   },
   craft: { seconds: 3, yield: 10, interactRange: 34 },

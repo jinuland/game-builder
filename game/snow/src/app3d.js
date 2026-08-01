@@ -270,13 +270,20 @@ export class SnowApp {
         );
         disc.position.y = 6; disc.rotation.x = 0.35; grp.add(disc);
       } else { // pill: two-tone capsule, glowing so it reads as "power-up"
-        const capMatA = new THREE.MeshStandardMaterial({ color: 0xffd43b, emissive: 0xcc9900, emissiveIntensity: 0.55, roughness: 0.35 });
-        const capMatB = new THREE.MeshStandardMaterial({ color: 0xff4d6d, emissive: 0xaa1133, emissiveIntensity: 0.55, roughness: 0.35 });
-        const half1 = new THREE.Mesh(new THREE.CapsuleGeometry(3.2, 3.5, 6, 12), capMatA);
-        half1.rotation.z = Math.PI / 2; half1.position.set(-1.8, 7, 0); grp.add(half1);
-        const half2 = new THREE.Mesh(new THREE.CapsuleGeometry(3.2, 3.5, 6, 12), capMatB);
-        half2.rotation.z = Math.PI / 2; half2.position.set(1.8, 7, 0); grp.add(half2);
+        const capMatA = new THREE.MeshStandardMaterial({ color: 0xffd43b, emissive: 0xcc9900, emissiveIntensity: 0.7, roughness: 0.35 });
+        const capMatB = new THREE.MeshStandardMaterial({ color: 0xff4d6d, emissive: 0xaa1133, emissiveIntensity: 0.7, roughness: 0.35 });
+        const half1 = new THREE.Mesh(new THREE.CapsuleGeometry(4.6, 5, 6, 12), capMatA);
+        half1.rotation.z = Math.PI / 2; half1.position.set(-2.6, 9, 0); grp.add(half1);
+        const half2 = new THREE.Mesh(new THREE.CapsuleGeometry(4.6, 5, 6, 12), capMatB);
+        half2.rotation.z = Math.PI / 2; half2.position.set(2.6, 9, 0); grp.add(half2);
       }
+      // vertical light beacon so items are findable from a distance
+      const beaconColor = it.kind === 'heal' ? 0xff6b6b : it.kind === 'shield' ? 0x4d9fff : 0xffd43b;
+      const beam = new THREE.Mesh(
+        new THREE.CylinderGeometry(1.5, 1.5, 52, 6),
+        new THREE.MeshBasicMaterial({ color: beaconColor, transparent: true, opacity: 0.34, blending: THREE.AdditiveBlending, depthWrite: false }),
+      );
+      beam.position.y = 26; grp.add(beam);
       grp.position.set(it.x, 0, it.y);
       s.add(grp);
       this.pickupMeshes.set(it.id, grp);
@@ -484,7 +491,8 @@ export class SnowApp {
   _enterPlay() {
     this.sceneName = 'play';
     if (this.dropTarget) { this.human.x = this.dropTarget.x; this.human.y = this.dropTarget.y; }
-    this.yaw = Math.atan2(this.game.zone.cy - this.human.y, this.game.zone.cx - this.human.x);
+    // keep facing the way the drop camera was gliding — no jarring snap
+    this.yaw = this._dropLandYaw != null ? this._dropLandYaw : Math.atan2(this.game.zone.cy - this.human.y, this.game.zone.cx - this.human.x);
     this.pitch = 0;
     this.audio.landing();
     this._toast('화면을 클릭해 조준을 잠그세요 (ESC 해제)');
@@ -918,6 +926,24 @@ export class SnowApp {
         const plan = this.dropPlan.get(p.id);
         const fig = this.actors.get(p.id);
         if (!plan || !fig) continue;
+        // parachute canopy above the figure while falling (lazy-built once)
+        if (!plan.chute) {
+          const S = CHAR_SCALE;
+          const chute = new THREE.Group();
+          const canopy = new THREE.Mesh(
+            new THREE.SphereGeometry(S * 1.7, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2),
+            new THREE.MeshStandardMaterial({ color: [0xff6b35, 0x7fd4ff, 0xffd43b, 0x9fe0c4][p.id % 4], roughness: 0.85, side: THREE.DoubleSide }),
+          );
+          canopy.position.y = S * 4.4; chute.add(canopy);
+          const lineMat = new THREE.MeshBasicMaterial({ color: 0xdddddd });
+          for (const [lx, lz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+            const line = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, S * 2.2, 3), lineMat);
+            line.position.set(lx * S * 0.9, S * 3.3, lz * S * 0.9);
+            line.rotation.z = -lx * 0.32; line.rotation.x = lz * 0.32;
+            chute.add(line);
+          }
+          fig.add(chute); plan.chute = chute;
+        }
         const ft = (this.dropT - plan.delay) / plan.fallSec; // 0..1 fall progress
         if (ft < 1) {
           const fallY = ft <= 0 ? 620 : 620 * (1 - ft) * (1 - ft); // ease-in landing
@@ -925,20 +951,28 @@ export class SnowApp {
           fig.position.y = fallY + 0.01;
           fig.position.x = p.x + sway;
           fig.rotation.z = Math.sin(now / 400 + plan.sway) * 0.18 * Math.max(0, 1 - ft);
+          plan.chute.visible = ft > 0;
           const hpS = this.hpSprites && this.hpSprites.get(p.id);
           if (hpS) hpS.visible = false; // no HP bars while airborne
         } else {
           fig.rotation.z = 0;
+          plan.chute.visible = false; // landed: canopy packed away
         }
       }
     }
-    const t01 = Math.min(1, this.dropT / 8);
-    const alt = 520 - t01 * 470;
     const tx = this.dropTarget ? this.dropTarget.x : g.zone.cx;
     const ty = this.dropTarget ? this.dropTarget.y : g.zone.cy;
-    // oblique fly-in: camera trails behind & above the target, swooping down
-    this.camera.position.set(tx - 260 + t01 * 220, alt + 40, ty + 380 - t01 * 330);
-    this.camera.lookAt(tx, 10, ty);
+    // smooth skydive: start high above the target, spiral down, and blend to
+    // eye height by landing so the cut into first-person is seamless
+    const t01 = Math.min(1, this.dropT / 8);
+    const ease = t01 * t01 * (3 - 2 * t01); // smoothstep
+    const alt = 620 * (1 - ease) + EYE;
+    const ang = -Math.PI / 2 + ease * 1.1; // gentle spiral
+    const dist = 420 * (1 - ease) + 8;
+    this.camera.position.set(tx + Math.cos(ang) * dist, alt, ty + Math.sin(ang) * dist);
+    const lookY = 8 * (1 - ease) + EYE * ease; // look down early, level out at landing
+    this.camera.lookAt(tx, lookY, ty);
+    this._dropLandYaw = ang + Math.PI; // face the same way we were gliding
     this.renderer.render(this.scene3, this.camera);
     // 2D tactical map (right side panel) for click-targeting — 3D flyover stays visible
     const ctx = this.fxCtx;
@@ -1181,6 +1215,8 @@ export class SnowApp {
       // place pickups in view for screenshot QA
       this.game.pickups.push({ id: 90002, kind: 'heal', x: h.x + 70, y: h.y - 40, takenUntil: 0 });
       this.game.pickups.push({ id: 90003, kind: 'shield', x: h.x + 110, y: h.y + 60, takenUntil: 0 });
+      this.game.pickups.push({ id: 90004, kind: 'pill', x: h.x + 60, y: h.y + 18, takenUntil: 0 });
+      this._buildWorld(); // rebuild so QA pickups get meshes
       near.forEach((p) => { p.hp = 40 + ((p.id * 13) % 55); }); // varied HP so gauges are visible
       return;
     }
