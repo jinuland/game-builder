@@ -20,6 +20,8 @@ export function createGame(seed = 42, opts = {}) {
     snowballs: [],           // active projectiles
     walls: [], decoys: [],
     piles: [],               // {x,y,cooldownUntil}
+    obstacles: [],           // static cover: {x,y,r,kind:'rock'|'tree'|'cabin'} — block movement & snowballs
+    corpses: [],             // fallen players: {id,x,y,skin,at} — rendered lying down, never removed
     zone: { cx: C.map.size / 2, cy: C.map.size / 2, radius: C.map.size * C.zone.startRadiusFactor, nextShrink: C.zone.firstShrinkSec, shrinks: 0 },
     events: [],              // telemetry event log
     placementOrder: [],      // ids in order of elimination (last = winner)
@@ -28,8 +30,30 @@ export function createGame(seed = 42, opts = {}) {
     stats: { craftAttempts: 0, craftDone: 0, craftCancel: 0, throws: 0, hits: 0, wallsBuilt: 0, decoys: 0, zoneDamageTicks: 0, zoneDamageTotal: 0, totalDamage: 0 },
   };
   spawnPiles(g);
+  spawnObstacles(g);
   spawnPlayers(g, opts);
   return g;
+}
+
+// Static obstacles: rocks, trees, cabins spread over the map. They block
+// movement and snowballs — real cover for FPS play.
+function spawnObstacles(g) {
+  const m = C.map.size;
+  const kinds = [
+    { kind: 'rock', n: 14, rMin: 14, rMax: 26 },
+    { kind: 'tree', n: 22, rMin: 8, rMax: 12 },
+    { kind: 'cabin', n: 6, rMin: 30, rMax: 40 },
+  ];
+  for (const k of kinds) {
+    for (let i = 0; i < k.n; i++) {
+      g.obstacles.push({
+        id: uid(), kind: k.kind,
+        x: g.rng.range(70, m - 70), y: g.rng.range(70, m - 70),
+        r: g.rng.range(k.rMin, k.rMax),
+        yaw: g.rng.range(0, Math.PI * 2),
+      });
+    }
+  }
 }
 
 function spawnPiles(g) {
@@ -94,6 +118,8 @@ function eliminate(g, p) {
   if (!p.alive) return;
   p.alive = false; p.crafting = false;
   g.placementOrder.push(p.id);
+  // leave a corpse where they fell (rendered lying in the snow)
+  g.corpses.push({ id: p.id, x: p.x, y: p.y, skin: p.skin, name: p.name, at: g.t, yaw: p.aim });
   g.events.push({ t: g.t, type: 'eliminate', id: p.id, isNpc: p.isNpc, place: aliveCount(g) + 1 });
   checkWin(g);
 }
@@ -268,6 +294,12 @@ export function step(g, dt) {
       }
     }
     if (blocked) { sb.dead = true; continue; }
+    // obstacle collision (rocks/trees/cabins are solid cover)
+    let hitObstacle = false;
+    for (const o of g.obstacles) {
+      if (Math.hypot(o.x - nx, o.y - ny) < o.r) { hitObstacle = true; break; }
+    }
+    if (hitObstacle) { sb.dead = true; continue; }
     // decoy collision (lures/destroys)
     let hitDecoy = false;
     for (const d of g.decoys) {
@@ -315,8 +347,17 @@ export function movePlayer(g, p, mvx, mvy, dt) {
   if (!p.alive || p.crafting) return;
   const spd = C.player.speed * (p.cover ? C.player.coverSpeedMul : 1) * dt;
   const len = Math.hypot(mvx, mvy) || 1;
-  p.x = Math.max(0, Math.min(C.map.size, p.x + (mvx / len) * spd));
-  p.y = Math.max(0, Math.min(C.map.size, p.y + (mvy / len) * spd));
+  let nx = Math.max(0, Math.min(C.map.size, p.x + (mvx / len) * spd));
+  let ny = Math.max(0, Math.min(C.map.size, p.y + (mvy / len) * spd));
+  // obstacle collision: push out of solid circles (slide along)
+  for (const o of g.obstacles) {
+    const min = o.r + C.player.radius * 0.6;
+    const dx = nx - o.x, dy = ny - o.y;
+    const d = Math.hypot(dx, dy);
+    if (d < min && d > 0.001) { nx = o.x + (dx / d) * min; ny = o.y + (dy / d) * min; }
+  }
+  p.x = Math.max(0, Math.min(C.map.size, nx));
+  p.y = Math.max(0, Math.min(C.map.size, ny));
 }
 
 // ---- NPC AI state machine ------------------------------------------------
@@ -438,7 +479,8 @@ export function serialize(g) {
     seed: g.seed, t: g.t, phase: g.phase, over: g.over, won: g.won,
     difficulty: g.difficulty,
     players: g.players, snowballs: g.snowballs, walls: g.walls, decoys: g.decoys,
-    piles: g.piles, zone: g.zone, placementOrder: g.placementOrder, kills: g.kills,
+    piles: g.piles, obstacles: g.obstacles, corpses: g.corpses,
+    zone: g.zone, placementOrder: g.placementOrder, kills: g.kills,
     _humanId: g._humanId, stats: g.stats,
   });
 }

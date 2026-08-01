@@ -1,5 +1,5 @@
-// Entry for Snow Royale. Supports ?seed=42&screen=play for headless validation.
-import { SnowApp } from './app.js';
+// Entry for Snow Royale 3D. Supports ?seed=42&screen=play for headless validation.
+import { SnowApp } from './app3d.js';
 
 const params = new URLSearchParams(location.search);
 const seed = params.has('seed') ? parseInt(params.get('seed'), 10) : null;
