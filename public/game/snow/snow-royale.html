@@ -11,7 +11,7 @@ html, body { margin: 0; height: 100%; background: var(--navy); color: var(--whit
   font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; overflow: hidden; }
 #game { width: 100vw; height: 100vh; }
 .sr-root { position: relative; width: 100%; height: 100%; background: var(--navy); }
-.sr-canvas { position: absolute; inset: 0; display: block; }
+.sr-canvas { position: absolute; inset: 0; display: block; cursor: crosshair; }
 
 .sr-overlay { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
   background: rgba(27,42,74,0.72); backdrop-filter: blur(4px); z-index: 20; }
@@ -51,13 +51,19 @@ html, body { margin: 0; height: 100%; background: var(--navy); color: var(--whit
 .sr-hud-surv { font-weight: 800; color: var(--aurora); }
 .sr-hud-act { color: var(--ice); font-size: 13px; }
 .sr-hud-zone { color: var(--orange); font-weight: 700; font-size: 13px; }
-.sr-hud-bl { position: absolute; left: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 6px; width: 220px; }
-.sr-hp { position: relative; height: 22px; background: rgba(0,0,0,0.5); border-radius: 6px; overflow: hidden; border: 1px solid rgba(255,255,255,0.2); }
+.sr-hud-bl { position: absolute; left: 20px; bottom: 20px; display: flex; flex-direction: column; gap: 6px; width: 240px; }
+.sr-hp { position: relative; height: 26px; background: rgba(0,0,0,0.5); border-radius: 4px; overflow: hidden; border: 1px solid rgba(255,255,255,0.25); transform: skewX(-8deg); }
 .sr-hp-fill { position: absolute; inset: 0; transition: width 0.12s; }
-.sr-hp-txt { position: relative; display: block; text-align: center; line-height: 22px; font-size: 12px; font-weight: 700; text-shadow: 0 1px 2px #000; }
-.sr-ammo { font-size: 18px; font-weight: 800; color: var(--white); text-shadow: 0 1px 3px #000; }
-.sr-tac { font-size: 12px; color: var(--ice); }
+.sr-hp-txt { position: relative; display: block; text-align: center; line-height: 26px; font-size: 15px; font-weight: 800; text-shadow: 0 1px 2px #000; transform: skewX(8deg); }
+.sr-tac { font-size: 12px; color: var(--ice); text-shadow: 0 1px 2px #000; }
 .sr-drop { font-size: 13px; color: var(--orange); font-weight: 700; }
+/* FPS-style ammo counter bottom-right */
+.sr-hud-br { position: absolute; right: 24px; bottom: 20px; text-align: right; }
+.sr-ammo-big { font-size: 52px; font-weight: 900; line-height: 1; color: var(--white); text-shadow: 0 2px 6px rgba(0,0,0,0.6); }
+.sr-ammo-cap { font-size: 10px; letter-spacing: 0.2em; color: var(--ice); margin: 2px 0 6px; }
+/* kill feed */
+.sr-killfeed { position: absolute; right: 16px; top: 56px; display: flex; flex-direction: column; gap: 4px; align-items: flex-end; }
+.sr-kf-row { background: rgba(13,27,42,0.72); border-left: 3px solid var(--orange); color: var(--white); font-size: 12px; padding: 4px 10px; border-radius: 3px; }
 .sr-minimap { position: absolute; right: 16px; top: 16px; border: 2px solid var(--ice); border-radius: 8px; overflow: hidden; }
 .sr-toast { position: absolute; bottom: 90px; left: 50%; transform: translateX(-50%); background: rgba(13,27,42,0.92);
   border: 1px solid var(--orange); color: var(--white); padding: 10px 18px; border-radius: 8px; font-size: 14px; max-width: 80%; text-align: center; }
@@ -690,9 +696,10 @@ function deserialize(json) {
 
 
 /* ===== app.js ===== */
-// Snow Royale browser app — Canvas top-down 2.5D renderer, input (WASD+mouse+keys,
-// touch), HUD, parachute drop, minimap, scenes (title/drop/play/result). Drives
-// the pure engine. Human is players[0]; NPCs run in engine.step.
+// Snow Royale browser app — TRUE FIRST-PERSON renderer (서든어택/배틀그라운드 스타일).
+// Pointer-lock mouse-look, perspective ground-plane projection with billboarded
+// sprites, fog, crosshair + charge meter, first-person view model. The engine
+// stays the same 2D simulation; this layer projects it into an FPS camera.
 
 
 
@@ -700,6 +707,11 @@ const ASSET = 'assets/';
 const CHAR_FILES = { jack: 'char_jack.webp', white: 'char_white.webp', bear: 'char_bear.webp', bot: 'char_bot.webp' };
 const BG_FILES = { plains: 'bg_plains.webp', village: 'bg_village.webp', lake: 'bg_lake.webp', lobby: 'bg_lobby.webp' };
 const SAVE_KEY = 'snow_royale_save_v1';
+
+// world scale: 1200u map ≈ 100m → eye height ~1.7m ≈ 20u, character ~2m ≈ 26u
+const EYE = 20;
+const CHAR_H = 30;
+const FOG_START = 260, FOG_END = 620;
 
 class SnowApp {
   constructor(root, { seed = null, timeScale = 1, autoStart = true } = {}) {
@@ -710,9 +722,14 @@ class SnowApp {
     this.images = {};
     this.scene = 'title';
     this.keys = {};
-    this.mouse = { x: 0, y: 0, down: false, downAt: 0 };
+    this.mouse = { down: false, downAt: 0 };
+    this.yaw = 0; this.pitch = 0;
+    this.locked = false;
+    this.bobT = 0;
+    this.hitMarkerUntil = 0;
+    this.damageFlashUntil = 0;
+    this.killFeed = [];
     this.dropTarget = null;
-    this.challengeUnlocked = false;
     this._build();
     if (autoStart) this._loadAssets().then(() => this._showTitle());
   }
@@ -744,6 +761,7 @@ class SnowApp {
     this.canvas.style.width = w + 'px'; this.canvas.style.height = h + 'px';
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     this.vw = w; this.vh = h;
+    this.focal = (w / 2); // 90° horizontal FOV
   }
 
   async _loadAssets() {
@@ -763,9 +781,10 @@ class SnowApp {
   // ---- scenes --------------------------------------------------------------
   _showTitle() {
     this.scene = 'title'; this.hud.style.display = 'none';
+    if (document.pointerLockElement) document.exitPointerLock();
     const c = document.createElement('div'); c.className = 'sr-title';
     const h = document.createElement('h1'); h.textContent = '스노우 로얄';
-    const sub = document.createElement('p'); sub.className = 'sr-sub'; sub.textContent = 'Snow Royale — 3초의 침묵이 설원의 왕을 결정한다';
+    const sub = document.createElement('p'); sub.className = 'sr-sub'; sub.textContent = 'Snow Royale — 1인칭 눈싸움 배틀로얄 · 3초의 침묵이 설원의 왕을 결정한다';
     c.appendChild(h); c.appendChild(sub);
     const diffRow = document.createElement('div'); diffRow.className = 'sr-diffrow';
     this._difficulty = this._difficulty || 'normal';
@@ -779,7 +798,8 @@ class SnowApp {
     c.appendChild(this._btn('❓ 조작법', () => this._showHelp()));
     const mute = this._btn(this.audio.muted ? '🔇 사운드' : '🔊 사운드', () => { this.audio.setMuted(!this.audio.muted); mute.textContent = this.audio.muted ? '🔇 사운드' : '🔊 사운드'; });
     c.appendChild(mute);
-    const foot = document.createElement('p'); foot.className = 'sr-foot'; foot.textContent = '솔로 20인(당신 + NPC 19) · 목표: 최후의 1인 · 이동 WASD · 마우스 조준/투척(홀드) · E 제작 · Q 설벽 · F 미끼 · C 엄폐 · M 미니맵';
+    const foot = document.createElement('p'); foot.className = 'sr-foot';
+    foot.textContent = '1인칭 FPS · 화면 클릭=조준 잠금(ESC 해제) · WASD 이동 · 마우스 시점 · 좌클릭 홀드→놓기 투척 · E 제작 · Q 설벽 · F 미끼 · C 엄폐 · M 지도';
     c.appendChild(foot);
     this.overlay.innerHTML = ''; this.overlay.appendChild(c); this.overlay.style.display = 'flex';
   }
@@ -787,17 +807,17 @@ class SnowApp {
   _showHelp() {
     const ov = document.createElement('div'); ov.className = 'sr-modal';
     const box = document.createElement('div'); box.className = 'sr-modal-box';
-    const h = document.createElement('h2'); h.textContent = '조작법';
+    const h = document.createElement('h2'); h.textContent = '조작법 (FPS)';
     box.appendChild(h);
     const lines = [
-      '이동: W A S D — 눈더미로 이동하고 눈보라 구역 안으로 피신',
-      '조준: 마우스 이동 — 캐릭터가 커서 방향을 바라봄',
-      '투척: 마우스 왼쪽 버튼 홀드 → 놓기 — 오래 누를수록 멀리(눈뭉치 1개 소비)',
-      'E 제작: 눈더미 근처에서 3초 정지 → 눈뭉치 +10 (도중 이동/피격 시 취소)',
-      'Q 설벽: 눈뭉치 4개 소비, 전방에 엄폐물 생성',
-      'F 미끼: 눈뭉치 5개 소비, 눈사람으로 적 시선 유인',
-      'C 엄폐: 근처 엄폐물에 붙어 피해 절반',
-      'M 미니맵 · Space(결과 화면) 재도전',
+      '🖱 화면 클릭 — 마우스 조준 잠금 시작 (ESC로 해제)',
+      '마우스 이동 — 시점 회전(마우스룩), 화면 중앙 십자선으로 조준',
+      'W A S D — 보는 방향 기준 전진/좌/후진/우 이동',
+      '좌클릭 홀드 → 놓기 — 눈뭉치 투척 (오래 누를수록 멀리, 십자선 아래 차지 게이지)',
+      'E — 눈더미 근처에서 3초 제작 (+10, 도중 이동/피격 시 취소, 완전 무방비!)',
+      'Q — 설벽 건설 (눈뭉치 4개) · F — 눈사람 미끼 (5개) · C — 엄폐(피해 절반)',
+      'M — 전장 지도 · Tab 유지 없음 · 피격 시 화면 가장자리 빨간 플래시',
+      '적을 맞히면 십자선에 히트마커(✕)가 번쩍입니다',
     ];
     lines.forEach((t) => { const p = document.createElement('p'); p.textContent = t; box.appendChild(p); });
     box.appendChild(this._btn('닫기', () => ov.remove(), true));
@@ -810,24 +830,30 @@ class SnowApp {
     this.game = E.createGame(s, { total: C.match.total, difficulty: this._difficulty || 'normal' });
     this.human = E.humanPlayer(this.game);
     this.scene = 'drop';
-    this.dropT = 0; this.dropAlt = 1; this.dropTarget = { x: this.game.zone.cx + (this.game.rng.range(-300, 300)), y: this.game.zone.cy + this.game.rng.range(-300, 300) };
+    this.dropT = 0;
+    this.dropTarget = { x: this.game.zone.cx + this.game.rng.range(-300, 300), y: this.game.zone.cy + this.game.rng.range(-300, 300) };
+    this.yaw = 0; this.pitch = 0;
+    this.killFeed = [];
     this.overlay.style.display = 'none'; this.overlay.innerHTML = '';
     this.hud.style.display = 'block';
     this._lastSurvivors = C.match.total;
-    this._toast('낙하 지점을 클릭해 조준하세요 — 자동 착지까지 남은 시간이 흐릅니다');
+    this._toast('낙하 지점을 클릭해 조준하세요 — 착지 후 화면을 클릭하면 FPS 조준이 잠깁니다');
   }
 
   _enterPlay() {
     this.scene = 'play';
-    // land human near chosen target
     if (this.dropTarget) { this.human.x = this.dropTarget.x; this.human.y = this.dropTarget.y; }
+    // face zone center on landing
+    this.yaw = Math.atan2(this.game.zone.cy - this.human.y, this.game.zone.cx - this.human.x);
     this.audio.landing();
+    this._toast('화면을 클릭해 조준을 잠그세요 (ESC로 해제)');
   }
 
   _showResult() {
     this.scene = 'result'; this.hud.style.display = 'none';
+    if (document.pointerLockElement) document.exitPointerLock();
     const r = E.result(this.game);
-    if (r.won) { this.audio.fanfare(); this.challengeUnlocked = true; } else this.audio.gameover();
+    if (r.won) this.audio.fanfare(); else this.audio.gameover();
     this.audio.stopAll();
     const c = document.createElement('div'); c.className = 'sr-result ' + (r.won ? 'sr-win' : 'sr-lose');
     const big = document.createElement('div'); big.className = 'sr-place';
@@ -838,7 +864,6 @@ class SnowApp {
     stat.appendChild(this._stat('처치', r.kills));
     stat.appendChild(this._stat('생존', `${Math.floor(r.survivedSec / 60)}:${String(Math.floor(r.survivedSec % 60)).padStart(2, '0')}`));
     c.appendChild(big); c.appendChild(h); c.appendChild(stat);
-    // cause of elimination readability
     const cause = document.createElement('p'); cause.className = 'sr-sub';
     cause.textContent = r.won ? '마지막까지 맞지 않았습니다.' : (this._humanLastCause || '눈뭉치에 맞아 탈락했습니다.');
     c.appendChild(cause);
@@ -848,7 +873,7 @@ class SnowApp {
     try { localStorage.setItem(SAVE_KEY, JSON.stringify({ lastPlace: r.place, won: r.won })); } catch { /* ignore */ }
   }
 
-  // ---- input ---------------------------------------------------------------
+  // ---- input (pointer lock FPS) ---------------------------------------------
   _bindInput() {
     window.addEventListener('keydown', (e) => {
       this.keys[e.key.toLowerCase()] = true;
@@ -859,230 +884,484 @@ class SnowApp {
       if (e.key === 'm' || e.key === 'M') this._showMinimap = !this._showMinimap;
     });
     window.addEventListener('keyup', (e) => { this.keys[e.key.toLowerCase()] = false; });
+
+    // pointer lock lifecycle
+    document.addEventListener('pointerlockchange', () => {
+      this.locked = document.pointerLockElement === this.canvas;
+      if (!this.locked && this.scene === 'play') this._toast('조준 잠금 해제됨 — 화면을 클릭해 다시 잠그세요');
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!this.locked || this.scene !== 'play') return;
+      const sens = 0.0026;
+      this.yaw += e.movementX * sens;
+      this.pitch = Math.max(-0.6, Math.min(0.5, this.pitch + e.movementY * sens * 0.8));
+    });
+
     const rect = () => this.canvas.getBoundingClientRect();
-    this.canvas.addEventListener('mousemove', (e) => { const r = rect(); this.mouse.x = e.clientX - r.left; this.mouse.y = e.clientY - r.top; });
     this.canvas.addEventListener('mousedown', (e) => {
       this.audio.resume();
-      if (this.scene === 'drop') { const w = this._screenToWorld(e.offsetX ?? this.mouse.x, e.offsetY ?? this.mouse.y); this.dropTarget = w; return; }
-      if (this.scene === 'play') { this.mouse.down = true; this.mouse.downAt = performance.now(); }
+      if (this.scene === 'drop') {
+        const r = rect();
+        const w = this._dropScreenToWorld(e.clientX - r.left, e.clientY - r.top);
+        if (w) this.dropTarget = w;
+        return;
+      }
+      if (this.scene === 'play') {
+        if (!this.locked) {
+          const p = this.canvas.requestPointerLock && this.canvas.requestPointerLock({ unadjustedMovement: true });
+          if (p && p.catch) p.catch(() => this.canvas.requestPointerLock());
+          return; // first click locks; next clicks throw
+        }
+        this.mouse.down = true; this.mouse.downAt = performance.now();
+      }
     });
     this.canvas.addEventListener('mouseup', () => {
-      if (this.scene === 'play' && this.mouse.down) { this._throw(performance.now() - this.mouse.downAt); this.mouse.down = false; }
+      if (this.scene === 'play' && this.locked && this.mouse.down) {
+        this._throw(performance.now() - this.mouse.downAt);
+        this.mouse.down = false;
+      }
     });
-    // touch (basic): tap to move toward, long-press to throw toward
-    this.canvas.addEventListener('touchstart', (e) => { this.audio.resume(); this.mouse.down = true; this.mouse.downAt = performance.now(); const t = e.touches[0]; const r = rect(); this.mouse.x = t.clientX - r.left; this.mouse.y = t.clientY - r.top; e.preventDefault(); }, { passive: false });
+    // touch fallback: hold to charge & throw toward screen center
+    this.canvas.addEventListener('touchstart', (e) => { this.audio.resume(); if (this.scene === 'play') { this.mouse.down = true; this.mouse.downAt = performance.now(); } e.preventDefault(); }, { passive: false });
     this.canvas.addEventListener('touchend', (e) => { if (this.scene === 'play' && this.mouse.down) { this._throw(performance.now() - this.mouse.downAt); this.mouse.down = false; } e.preventDefault(); }, { passive: false });
   }
 
-  _screenToWorld(sx, sy) {
-    const cam = this._camera();
-    return { x: cam.x + (sx - this.vw / 2) / cam.zoom, y: cam.y + (sy - this.vh / 2) / cam.zoom };
-  }
-  _camera() {
-    const zoom = this.scene === 'drop' ? 0.4 : 1.3;
-    const cx = this.human ? this.human.x : this.game.zone.cx;
-    const cy = this.human ? this.human.y : this.game.zone.cy;
-    return { x: this.scene === 'drop' ? this.game.zone.cx : cx, y: this.scene === 'drop' ? this.game.zone.cy : cy, zoom };
-  }
-
-  _aimAngle() {
-    const cam = this._camera();
-    const wx = cam.x + (this.mouse.x - this.vw / 2) / cam.zoom;
-    const wy = cam.y + (this.mouse.y - this.vh / 2) / cam.zoom;
-    return Math.atan2(wy - this.human.y, wx - this.human.x);
+  _dropScreenToWorld(sx, sy) {
+    // drop phase uses top-down map view
+    const zoom = Math.min(this.vw, this.vh) / (C.map.size * 1.05);
+    const ox = this.vw / 2 - this.game.zone.cx * zoom, oy = this.vh / 2 - this.game.zone.cy * zoom;
+    return { x: (sx - ox) / zoom, y: (sy - oy) / zoom };
   }
 
   _tryCraft() {
     if (!this.human.alive || this.human.crafting) return;
     if (E.startCraft(this.game, this.human)) this.audio.craftStart();
-    else this._toast('근처에 눈더미가 없습니다');
+    else this._toast('근처에 눈더미가 없습니다 — 지도(M)에서 흰 점을 찾으세요');
   }
   _throw(heldMs) {
     if (!this.human.alive || this.human.crafting) return;
-    if (this.human.snowballs <= 0) { this._toast('눈뭉치가 없습니다 — E로 제작하세요'); return; }
+    if (this.human.snowballs <= 0) { this._toast('눈뭉치 없음 — 눈더미에서 E로 제작하세요'); return; }
     const charge = E.chargeFromMs(heldMs);
-    E.throwSnowball(this.game, this.human, this._aimAngle(), charge);
+    E.throwSnowball(this.game, this.human, this.yaw, charge);
     this.audio.throw();
+    this.viewKick = 1; // view model throw animation
   }
   _act(kind) {
     if (!this.human.alive || this.human.crafting) return;
-    this.human.aim = this._aimAngle();
-    if (kind === 'wall') { if (E.buildWall(this.game, this.human)) this.audio.wall(); else this._toast(`설벽: 눈뭉치 ${C.wall.cost}개 필요 (최대 ${C.wall.maxPerPlayer}개)`); }
-    if (kind === 'decoy') { if (E.placeDecoy(this.game, this.human)) this.audio.decoy(); else this._toast(`미끼: 눈뭉치 ${C.decoy.cost}개 필요 (최대 ${C.decoy.maxPerPlayer}개)`); }
+    this.human.aim = this.yaw;
+    if (kind === 'wall') { if (E.buildWall(this.game, this.human)) this.audio.wall(); else this._toast(`설벽: 눈뭉치 ${C.wall.cost}개 필요 (최대 ${C.wall.maxPerPlayer})`); }
+    if (kind === 'decoy') { if (E.placeDecoy(this.game, this.human)) this.audio.decoy(); else this._toast(`미끼: 눈뭉치 ${C.decoy.cost}개 필요 (최대 ${C.decoy.maxPerPlayer})`); }
   }
 
   // ---- update --------------------------------------------------------------
   _update(dt) {
     if (!this.game) return;
     if (this.scene === 'drop') {
-      this.dropT += dt; this.dropAlt = Math.max(0, 1 - this.dropT / 20);
-      if (this.dropT >= 20) this._enterPlay();
+      this.dropT += dt;
+      if (this.dropT >= 8) this._enterPlay(); // shorter drop for pace
       return;
     }
     if (this.scene !== 'play') return;
     const g = this.game, h = this.human;
-    // human movement + aim
+    h.aim = this.yaw;
+    // view-relative WASD
     if (h.alive && !h.crafting) {
-      let mvx = 0, mvy = 0;
-      if (this.keys['w']) mvy -= 1; if (this.keys['s']) mvy += 1;
-      if (this.keys['a']) mvx -= 1; if (this.keys['d']) mvx += 1;
+      let f = 0, r = 0;
+      if (this.keys['w']) f += 1; if (this.keys['s']) f -= 1;
+      if (this.keys['d']) r += 1; if (this.keys['a']) r -= 1;
       h.cover = !!this.keys['c'];
-      if (mvx || mvy) E.movePlayer(g, h, mvx, mvy, dt);
-      h.aim = this._aimAngle();
+      if (f || r) {
+        const cos = Math.cos(this.yaw), sin = Math.sin(this.yaw);
+        const mvx = cos * f + (-sin) * r * -1; // right = (−sin? see note) — derive: right vector = (−sinθ, cosθ)... careful below
+        // forward = (cosθ, sinθ); right = (cos(θ+π/2), sin(θ+π/2)) = (−sinθ, cosθ)
+        const mx = cos * f + (-sin) * r;
+        const my = sin * f + (cos) * r;
+        E.movePlayer(g, h, mx, my, dt);
+        this.bobT += dt * 9;
+      }
     }
-    const beforeHp = h.hp, beforeCraft = h.crafting;
-    const beforeAlive = h.alive;
-    // craft heartbeat ticks
+    const beforeHp = h.hp, beforeCraft = h.crafting, beforeAlive = h.alive;
+    const killsBefore = g.kills[h.id] || 0;
+    const hitsBefore = g.stats.hits;
     if (h.crafting) { this._craftBeat = (this._craftBeat || 0) + dt; if (this._craftBeat > 0.5) { this._craftBeat = 0; this.audio.craftTick(); } }
     E.step(g, dt);
-    // audio reactions
-    if (beforeCraft && !h.crafting && h.alive) { if (h.snowballs > beforeHp) {} } // handled below
-    if (h.hp < beforeHp) this.audio.hit();
+    // feedback
+    if (h.hp < beforeHp) { this.audio.hit(); this.damageFlashUntil = performance.now() + 250; }
+    if ((g.kills[h.id] || 0) > killsBefore) { this.hitMarkerUntil = performance.now() + 400; }
+    else if (g.stats.hits > hitsBefore) {
+      // any hit this tick; if one of our snowballs vanished into a player near our aim, flash marker (approx)
+      this.hitMarkerUntil = Math.max(this.hitMarkerUntil, performance.now() + 220);
+    }
     if (beforeAlive && !h.alive) this._humanLastCause = '눈뭉치에 맞아 탈락했습니다.';
-    // survivor-based intensity + zone warn
+    // kill feed
+    for (const e of g.events.splice(0).filter((ev) => ev.type === 'kill' || ev.type === 'eliminate')) {
+      if (e.type === 'kill') {
+        const by = g.players.find((p) => p.id === e.by), v = g.players.find((p) => p.id === e.victim);
+        if (by && v) this.killFeed.push({ text: `${by.name} ❄→ ${v.name}`, until: performance.now() + 4200 });
+      }
+    }
+    if (this.killFeed.length > 5) this.killFeed = this.killFeed.slice(-5);
     const surv = E.aliveCount(g);
     if (surv !== this._lastSurvivors) { this.audio.setIntensity(surv); this._lastSurvivors = surv; }
-    if (g.zone.shrinks !== this._lastShrinks) { this._lastShrinks = g.zone.shrinks; if (this.scene === 'play') { this.audio.zoneWarn(); this._toast('눈보라 구역이 좁아집니다!'); } }
-    // craft done sound
-    if (beforeCraft && !h.crafting) { if (h.craftTimer <= 0) this.audio.craftDone(); }
+    if (g.zone.shrinks !== this._lastShrinks) { this._lastShrinks = g.zone.shrinks; this.audio.zoneWarn(); this._toast('⚠ 눈보라 구역이 좁아집니다!'); }
+    if (beforeCraft && !h.crafting && h.craftTimer <= 0 && h.alive) this.audio.craftDone();
+    if (this.viewKick > 0) this.viewKick = Math.max(0, this.viewKick - dt * 4);
     if (g.over) this._showResult();
   }
 
-  // ---- render --------------------------------------------------------------
+  // ---- FPS render ------------------------------------------------------------
   _loop() {
     let last = performance.now();
     const frame = (now) => {
       let dt = (now - last) / 1000; last = now;
       dt = Math.min(0.05, dt) * this.timeScale;
       if (this.game && (this.scene === 'play' || this.scene === 'drop')) this._update(dt);
-      if (this.game) { this._render(); this._renderHud(); }
+      if (this.game) {
+        if (this.scene === 'drop') this._renderDrop();
+        else this._renderFps(now);
+        this._renderHud();
+      }
       requestAnimationFrame(frame);
     };
     requestAnimationFrame(frame);
   }
 
-  _bgKeyForPos(x, y) {
-    // 4 quadrant zones -> background flavor
-    const half = C.map.size / 2;
-    if (x < half && y < half) return 'bg_village';
-    if (x >= half && y < half) return 'bg_plains';
-    if (x < half && y >= half) return 'bg_lake';
-    return 'bg_plains';
-  }
-
-  _render() {
-    const ctx = this.ctx, g = this.game; const cam = this._camera();
+  // top-down map for the parachute phase (aim your landing)
+  _renderDrop() {
+    const ctx = this.ctx, g = this.game;
+    const zoom = Math.min(this.vw, this.vh) / (C.map.size * 1.05);
+    const ox = this.vw / 2 - g.zone.cx * zoom, oy = this.vh / 2 - g.zone.cy * zoom;
+    const bg = this.images.bg_lobby;
     ctx.clearRect(0, 0, this.vw, this.vh);
-    // background
-    const bg = this.images[this.scene === 'drop' ? 'bg_lobby' : this._bgKeyForPos(this.human?.x || cam.x, this.human?.y || cam.y)];
-    if (bg && bg.complete) { ctx.globalAlpha = 0.9; ctx.drawImage(bg, 0, 0, this.vw, this.vh); ctx.globalAlpha = 1; }
-    else { ctx.fillStyle = '#dce8f0'; ctx.fillRect(0, 0, this.vw, this.vh); }
-    // snow tint
-    ctx.fillStyle = 'rgba(168,216,234,0.25)'; ctx.fillRect(0, 0, this.vw, this.vh);
-
-    const toScreen = (wx, wy) => ({ x: this.vw / 2 + (wx - cam.x) * cam.zoom, y: this.vh / 2 + (wy - cam.y) * cam.zoom });
-
-    // zone circle
-    const zc = toScreen(g.zone.cx, g.zone.cy);
-    ctx.save();
-    ctx.beginPath(); ctx.arc(zc.x, zc.y, g.zone.radius * cam.zoom, 0, Math.PI * 2);
-    ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.lineWidth = 3; ctx.stroke();
-    // darken outside zone
-    ctx.fillStyle = 'rgba(60,90,140,0.28)';
-    ctx.rect(0, 0, this.vw, this.vh); ctx.arc(zc.x, zc.y, g.zone.radius * cam.zoom, 0, Math.PI * 2, true); ctx.fill('evenodd');
-    ctx.restore();
-
+    if (bg) { ctx.drawImage(bg, 0, 0, this.vw, this.vh); ctx.fillStyle = 'rgba(20,35,60,0.35)'; ctx.fillRect(0, 0, this.vw, this.vh); }
+    else { ctx.fillStyle = '#22344f'; ctx.fillRect(0, 0, this.vw, this.vh); }
+    // map frame
+    ctx.strokeStyle = 'rgba(255,255,255,0.4)'; ctx.strokeRect(ox, oy, C.map.size * zoom, C.map.size * zoom);
+    // zone
+    ctx.beginPath(); ctx.arc(g.zone.cx * zoom + ox, g.zone.cy * zoom + oy, g.zone.radius * zoom, 0, Math.PI * 2);
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
     // piles
-    for (const pile of g.piles) {
-      const s = toScreen(pile.x, pile.y);
-      if (s.x < -20 || s.x > this.vw + 20 || s.y < -20 || s.y > this.vh + 20) continue;
-      const onCd = pile.cooldownUntil > g.t;
-      ctx.fillStyle = onCd ? 'rgba(150,160,180,0.6)' : '#f5f5f5';
-      ctx.strokeStyle = '#A8D8EA'; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.arc(s.x, s.y, 10 * cam.zoom, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-    }
-    // walls
-    for (const w of g.walls) {
-      const s = toScreen(w.x, w.y); const half = C.wall.len / 2 * cam.zoom;
-      ctx.save(); ctx.translate(s.x, s.y); ctx.rotate(w.angle);
-      ctx.fillStyle = '#eaf4fb'; ctx.strokeStyle = '#7fb0d0'; ctx.lineWidth = 2;
-      ctx.fillRect(-half, -5 * cam.zoom, half * 2, 10 * cam.zoom); ctx.strokeRect(-half, -5 * cam.zoom, half * 2, 10 * cam.zoom);
-      ctx.restore();
-    }
-    // decoys
-    for (const d of g.decoys) {
-      const s = toScreen(d.x, d.y);
-      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(s.x, s.y, 9 * cam.zoom, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#FF6B35'; ctx.beginPath(); ctx.arc(s.x + 2, s.y, 2, 0, Math.PI * 2); ctx.fill();
-    }
-    // players
-    for (const p of g.players) {
-      if (!p.alive) continue;
-      const s = toScreen(p.x, p.y);
-      if (s.x < -40 || s.x > this.vw + 40 || s.y < -40 || s.y > this.vh + 40) continue;
-      this._drawPlayer(ctx, p, s, cam);
-    }
-    // snowballs
-    for (const sb of g.snowballs) {
-      const s = toScreen(sb.x, sb.y);
-      ctx.fillStyle = '#fff'; ctx.strokeStyle = '#A8D8EA'; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.arc(s.x, s.y, 4 * cam.zoom, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-    }
-
-    // drop marker
-    if (this.scene === 'drop' && this.dropTarget) {
-      const s = toScreen(this.dropTarget.x, this.dropTarget.y);
+    for (const p of g.piles) { ctx.fillStyle = 'rgba(255,255,255,0.85)'; ctx.beginPath(); ctx.arc(p.x * zoom + ox, p.y * zoom + oy, 3, 0, Math.PI * 2); ctx.fill(); }
+    // others dropping
+    for (const p of this.game.players) { if (p.isNpc) { ctx.fillStyle = 'rgba(158,158,158,0.9)'; ctx.beginPath(); ctx.arc(p.x * zoom + ox, p.y * zoom + oy, 2.5, 0, Math.PI * 2); ctx.fill(); } }
+    // target
+    if (this.dropTarget) {
+      const tx = this.dropTarget.x * zoom + ox, ty = this.dropTarget.y * zoom + oy;
       ctx.strokeStyle = '#FF6B35'; ctx.lineWidth = 3;
-      ctx.beginPath(); ctx.arc(s.x, s.y, 18, 0, Math.PI * 2); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(s.x - 24, s.y); ctx.lineTo(s.x + 24, s.y); ctx.moveTo(s.x, s.y - 24); ctx.lineTo(s.x, s.y + 24); ctx.stroke();
-    }
-
-    // aim/charge indicator
-    if (this.scene === 'play' && this.human.alive && this.mouse.down) {
-      const hs = toScreen(this.human.x, this.human.y);
-      const charge = E.chargeFromMs(performance.now() - this.mouse.downAt);
-      const range = E.rangeForCharge(charge) * cam.zoom;
-      ctx.strokeStyle = `rgba(255,107,53,${0.4 + charge * 0.5})`; ctx.lineWidth = 2; ctx.setLineDash([6, 6]);
-      ctx.beginPath(); ctx.moveTo(hs.x, hs.y); ctx.lineTo(hs.x + Math.cos(this.human.aim) * range, hs.y + Math.sin(this.human.aim) * range); ctx.stroke();
-      ctx.setLineDash([]);
-    }
-    // craft countdown ring on human
-    if (this.scene === 'play' && this.human.crafting) {
-      const hs = toScreen(this.human.x, this.human.y);
-      const frac = 1 - this.human.craftTimer / C.craft.seconds;
-      const col = frac < 0.5 ? '#f5f5f5' : frac < 0.85 ? '#FF6B35' : '#DC143C';
-      ctx.strokeStyle = col; ctx.lineWidth = 4;
-      ctx.beginPath(); ctx.arc(hs.x, hs.y, 26, -Math.PI / 2, -Math.PI / 2 + frac * Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(tx, ty, 16, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(tx - 22, ty); ctx.lineTo(tx + 22, ty); ctx.moveTo(tx, ty - 22); ctx.lineTo(tx, ty + 22); ctx.stroke();
     }
   }
 
-  _drawPlayer(ctx, p, s, cam) {
-    const sk = SKINS[p.skin] || SKINS.jack;
-    const img = this.images[sk.asset];
-    const size = 34 * cam.zoom;
-    const isHuman = p.id === this.game._humanId;
-    // shadow
-    ctx.fillStyle = 'rgba(0,0,0,0.2)'; ctx.beginPath(); ctx.ellipse(s.x, s.y + size * 0.45, size * 0.35, size * 0.14, 0, 0, Math.PI * 2); ctx.fill();
-    if (img && img.complete) {
-      if (p.isNpc) ctx.globalAlpha = 0.92;
-      ctx.drawImage(img, s.x - size / 2, s.y - size, size, size * 1.5);
-      ctx.globalAlpha = 1;
+  _project(wx, wy, z = 0) {
+    const h = this.human;
+    const dx = wx - h.x, dy = wy - h.y;
+    const cos = Math.cos(this.yaw), sin = Math.sin(this.yaw);
+    const camf = dx * cos + dy * sin;          // forward depth
+    const camr = -dx * sin + dy * cos;         // right offset
+    if (camf < 4) return null;
+    const sx = this.vw / 2 + (camr / camf) * this.focal;
+    const horizon = this._horizonY();
+    const sy = horizon + ((EYE - z) / camf) * this.focal;
+    return { sx, sy, depth: camf, scale: this.focal / camf };
+  }
+  _horizonY() {
+    const bob = Math.sin(this.bobT) * 3;
+    return this.vh * 0.5 + this.pitch * this.vh * 0.7 + bob;
+  }
+  _fog(depth) { return Math.max(0, Math.min(1, (depth - FOG_START) / (FOG_END - FOG_START))); }
+
+  _renderFps(now) {
+    const ctx = this.ctx, g = this.game, h = this.human;
+    const horizon = this._horizonY();
+
+    // --- sky: panorama strip from bg image shifted by yaw (wraps) ---
+    ctx.clearRect(0, 0, this.vw, this.vh);
+    const pano = this.images.bg_plains;
+    if (pano) {
+      const pw = this.vw * 2.6; // stretch image over 360°/FOV span feel
+      let off = (-(this.yaw / (Math.PI * 2)) * pw) % pw; if (off > 0) off -= pw;
+      const skyH = Math.max(80, horizon);
+      for (let x = off; x < this.vw; x += pw) ctx.drawImage(pano, x, horizon - skyH, pw, skyH);
+      ctx.fillStyle = 'rgba(150,185,215,0.25)'; ctx.fillRect(0, 0, this.vw, Math.max(0, horizon));
     } else {
-      ctx.fillStyle = sk.color; ctx.beginPath(); ctx.arc(s.x, s.y, size * 0.4, 0, Math.PI * 2); ctx.fill();
+      const sky = ctx.createLinearGradient(0, 0, 0, horizon);
+      sky.addColorStop(0, '#9dbede'); sky.addColorStop(1, '#e8f2f8');
+      ctx.fillStyle = sky; ctx.fillRect(0, 0, this.vw, Math.max(0, horizon));
     }
-    // aim direction pip
-    ctx.strokeStyle = isHuman ? '#FF6B35' : 'rgba(255,255,255,0.5)'; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(s.x + Math.cos(p.aim) * size * 0.6, s.y + Math.sin(p.aim) * size * 0.6); ctx.stroke();
-    // hp bar
-    const bw = size * 0.9;
-    ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(s.x - bw / 2, s.y - size - 8, bw, 4);
-    ctx.fillStyle = isHuman ? '#7FFFD4' : (p.hp > 50 ? '#A8D8EA' : '#DC143C');
-    ctx.fillRect(s.x - bw / 2, s.y - size - 8, bw * (p.hp / C.player.maxHp), 4);
-    // name for human + nearby
-    if (isHuman) { ctx.fillStyle = '#FF6B35'; ctx.font = 'bold 11px system-ui'; ctx.textAlign = 'center'; ctx.fillText('YOU', s.x, s.y - size - 12); }
+
+    // --- ground: perspective snow gradient ---
+    const grd = ctx.createLinearGradient(0, horizon, 0, this.vh);
+    grd.addColorStop(0, '#cfe0ec'); grd.addColorStop(0.25, '#e9f2f7'); grd.addColorStop(1, '#fbfdff');
+    ctx.fillStyle = grd; ctx.fillRect(0, Math.max(0, horizon), this.vw, this.vh - horizon);
+
+    // ground speckle grid → strong motion/parallax cue
+    ctx.fillStyle = 'rgba(140,170,195,0.5)';
+    const GRID = 60;
+    const gx0 = Math.floor((h.x - 700) / GRID) * GRID, gx1 = h.x + 700;
+    const gy0 = Math.floor((h.y - 700) / GRID) * GRID, gy1 = h.y + 700;
+    for (let wx = gx0; wx <= gx1; wx += GRID) {
+      for (let wy = gy0; wy <= gy1; wy += GRID) {
+        const p = this._project(wx, wy);
+        if (!p || p.sy < horizon || p.sy > this.vh) continue;
+        const r = Math.max(0.6, 2.6 * p.scale * 0.02);
+        const a = 0.55 * (1 - this._fog(p.depth));
+        if (a <= 0.02) continue;
+        ctx.globalAlpha = a;
+        ctx.beginPath(); ctx.arc(p.sx, p.sy, r, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    ctx.globalAlpha = 1;
+
+    // --- blizzard zone wall (translucent vertical wall on the circle) ---
+    this._renderZoneWall(ctx, horizon);
+
+    // --- collect & depth-sort billboards ---
+    const items = [];
+    for (const pile of g.piles) {
+      const p = this._project(pile.x, pile.y);
+      if (p) items.push({ ...p, kind: 'pile', ref: pile });
+    }
+    for (const w of g.walls) { const p = this._project(w.x, w.y); if (p) items.push({ ...p, kind: 'wall', ref: w }); }
+    for (const d of g.decoys) { const p = this._project(d.x, d.y); if (p) items.push({ ...p, kind: 'decoy', ref: d }); }
+    for (const pl of g.players) {
+      if (!pl.alive || pl.id === h.id) continue;
+      const p = this._project(pl.x, pl.y);
+      if (p) items.push({ ...p, kind: 'player', ref: pl });
+    }
+    for (const sb of g.snowballs) {
+      const t = sb.range > 0 ? sb.traveled / sb.range : 0;
+      const apex = Math.min(70, sb.range * 0.18);
+      const z = Math.max(0, 4 * apex * t * (1 - t)) + 14;
+      const p = this._project(sb.x, sb.y, z);
+      if (p) items.push({ ...p, kind: 'snowball', ref: sb });
+    }
+    items.sort((a, b) => b.depth - a.depth);
+    for (const it of items) this._drawBillboard(ctx, it, now);
+
+    // --- snow particles drifting (screen-space ambience) ---
+    this._renderSnowfall(ctx, now);
+
+    // --- outside-zone tint ---
+    const distC = Math.hypot(h.x - g.zone.cx, h.y - g.zone.cy);
+    if (distC > g.zone.radius) {
+      ctx.fillStyle = 'rgba(90,140,200,0.28)'; ctx.fillRect(0, 0, this.vw, this.vh);
+    }
+
+    // --- damage flash (red vignette) ---
+    if (now < this.damageFlashUntil) {
+      const gEdge = ctx.createRadialGradient(this.vw / 2, this.vh / 2, this.vh * 0.35, this.vw / 2, this.vh / 2, this.vh * 0.75);
+      gEdge.addColorStop(0, 'rgba(220,20,60,0)'); gEdge.addColorStop(1, 'rgba(220,20,60,0.5)');
+      ctx.fillStyle = gEdge; ctx.fillRect(0, 0, this.vw, this.vh);
+    }
+
+    // --- first-person view model (mitten + snowball) ---
+    this._renderViewModel(ctx, now);
+
+    // --- crosshair + charge + hit marker ---
+    this._renderCrosshair(ctx, now);
+
+    // pointer-lock prompt
+    if (!this.locked && this.human.alive) {
+      ctx.fillStyle = 'rgba(13,27,42,0.75)';
+      const bw = 420, bh = 54;
+      ctx.fillRect(this.vw / 2 - bw / 2, this.vh * 0.62, bw, bh);
+      ctx.strokeStyle = '#FF6B35'; ctx.strokeRect(this.vw / 2 - bw / 2, this.vh * 0.62, bw, bh);
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 16px system-ui'; ctx.textAlign = 'center';
+      ctx.fillText('🖱 화면을 클릭해 조준 잠금 (마우스로 시점 회전)', this.vw / 2, this.vh * 0.62 + 33);
+    }
   }
 
-  // ---- HUD -----------------------------------------------------------------
+  _renderZoneWall(ctx, horizon) {
+    const g = this.game, h = this.human;
+    const samples = 90;
+    let prev = null;
+    for (let i = 0; i <= samples; i++) {
+      const a = (i / samples) * Math.PI * 2;
+      const wx = g.zone.cx + Math.cos(a) * g.zone.radius;
+      const wy = g.zone.cy + Math.sin(a) * g.zone.radius;
+      const base = this._project(wx, wy, 0);
+      const top = this._project(wx, wy, 90);
+      if (base && top && prev && prev.base) {
+        const fog = this._fog(base.depth);
+        if (fog < 0.98) {
+          ctx.fillStyle = `rgba(210,235,255,${0.34 * (1 - fog)})`;
+          ctx.beginPath();
+          ctx.moveTo(prev.base.sx, prev.base.sy); ctx.lineTo(base.sx, base.sy);
+          ctx.lineTo(top.sx, top.sy); ctx.lineTo(prev.top.sx, prev.top.sy);
+          ctx.closePath(); ctx.fill();
+        }
+      }
+      prev = base && top ? { base, top } : null;
+    }
+  }
+
+  _drawBillboard(ctx, it, now) {
+    const fog = this._fog(it.depth);
+    if (fog >= 0.99) return;
+    const alpha = 1 - fog * 0.9;
+    ctx.globalAlpha = alpha;
+    if (it.kind === 'player') {
+      const pl = it.ref;
+      const sk = SKINS[pl.skin] || SKINS.bot;
+      const img = this.images[pl.skin] || this.images.bot;
+      const hpx = (CHAR_H / it.depth) * this.focal;
+      const wpx = hpx * 0.62;
+      // shadow
+      ctx.fillStyle = `rgba(60,80,110,${0.25 * alpha})`;
+      ctx.beginPath(); ctx.ellipse(it.sx, it.sy, wpx * 0.45, wpx * 0.14, 0, 0, Math.PI * 2); ctx.fill();
+      if (img) ctx.drawImage(img, it.sx - wpx / 2, it.sy - hpx, wpx, hpx);
+      else { ctx.fillStyle = sk.color; ctx.fillRect(it.sx - wpx / 2, it.sy - hpx, wpx, hpx); }
+      // name + hp bar (near only)
+      if (it.depth < 320) {
+        const bw = Math.max(30, wpx * 0.9);
+        ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(it.sx - bw / 2, it.sy - hpx - 12, bw, 5);
+        ctx.fillStyle = pl.hp > 50 ? '#7FFFD4' : '#DC143C';
+        ctx.fillRect(it.sx - bw / 2, it.sy - hpx - 12, bw * (pl.hp / C.player.maxHp), 5);
+        ctx.fillStyle = pl.isNpc ? '#cfd6dd' : '#fff';
+        ctx.font = `bold ${Math.max(10, Math.min(14, hpx * 0.09))}px system-ui`; ctx.textAlign = 'center';
+        ctx.fillText(pl.name, it.sx, it.sy - hpx - 17);
+      }
+    } else if (it.kind === 'pile') {
+      const pile = it.ref;
+      const onCd = pile.cooldownUntil > this.game.t;
+      const hpx = (14 / it.depth) * this.focal;
+      const wpx = hpx * 2.1;
+      ctx.fillStyle = onCd ? `rgba(190,200,215,${alpha})` : `rgba(250,252,255,${alpha})`;
+      ctx.strokeStyle = `rgba(150,185,210,${alpha})`;
+      ctx.beginPath(); ctx.ellipse(it.sx, it.sy - hpx * 0.3, wpx / 2, hpx * 0.62, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      // E prompt when near & available
+      if (!onCd && it.depth < C.craft.interactRange + 22) {
+        ctx.fillStyle = '#FF6B35'; ctx.font = 'bold 15px system-ui'; ctx.textAlign = 'center';
+        ctx.fillText('E — 눈뭉치 제작 (3초 무방비)', it.sx, it.sy - hpx - 10);
+      }
+    } else if (it.kind === 'wall') {
+      const hpx = (26 / it.depth) * this.focal;
+      const wpx = (C.wall.len / it.depth) * this.focal;
+      ctx.fillStyle = `rgba(240,248,255,${alpha})`;
+      ctx.strokeStyle = `rgba(140,175,205,${alpha})`;
+      ctx.fillRect(it.sx - wpx / 2, it.sy - hpx, wpx, hpx);
+      ctx.strokeRect(it.sx - wpx / 2, it.sy - hpx, wpx, hpx);
+      // durability pips
+      for (let i = 0; i < it.ref.hp; i++) { ctx.fillStyle = `rgba(255,107,53,${alpha})`; ctx.fillRect(it.sx - wpx / 2 + 3 + i * 7, it.sy - hpx + 3, 5, 3); }
+    } else if (it.kind === 'decoy') {
+      const hpx = (22 / it.depth) * this.focal;
+      ctx.fillStyle = `rgba(255,255,255,${alpha})`;
+      ctx.beginPath(); ctx.arc(it.sx, it.sy - hpx * 0.25, hpx * 0.28, 0, Math.PI * 2); ctx.fill(); // body
+      ctx.beginPath(); ctx.arc(it.sx, it.sy - hpx * 0.62, hpx * 0.2, 0, Math.PI * 2); ctx.fill(); // head
+      ctx.fillStyle = `rgba(255,107,53,${alpha})`;
+      ctx.beginPath(); ctx.arc(it.sx + hpx * 0.06, it.sy - hpx * 0.62, hpx * 0.045, 0, Math.PI * 2); ctx.fill(); // carrot
+    } else if (it.kind === 'snowball') {
+      const r = Math.max(2, (5 / it.depth) * this.focal);
+      ctx.fillStyle = `rgba(255,255,255,${alpha})`;
+      ctx.strokeStyle = `rgba(160,195,220,${alpha})`;
+      ctx.beginPath(); ctx.arc(it.sx, it.sy, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  _renderSnowfall(ctx, now) {
+    // cheap screen-space snow: deterministic pseudo particles from time
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    const n = 40;
+    for (let i = 0; i < n; i++) {
+      const seed = i * 127.3;
+      const x = ((seed * 7919 + now * (0.02 + (i % 5) * 0.012)) % this.vw + this.vw) % this.vw;
+      const y = ((seed * 104729 + now * (0.05 + (i % 7) * 0.014)) % this.vh + this.vh) % this.vh;
+      const r = 1 + (i % 3) * 0.7;
+      ctx.globalAlpha = 0.25 + (i % 4) * 0.12;
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  _renderViewModel(ctx, now) {
+    const h = this.human;
+    if (!h.alive) return;
+    const cx = this.vw / 2, base = this.vh;
+    const bob = Math.sin(this.bobT) * 5;
+    const kick = (this.viewKick || 0);
+    const charge = this.mouse.down ? E.chargeFromMs(performance.now() - this.mouse.downAt) : 0;
+    const pull = charge * 26 + kick * -34; // pull back while charging, kick forward on throw
+    const hx = cx + this.vw * 0.21, hy = base - 64 + bob + pull * 0.6;
+    // arm (navy sleeve)
+    ctx.fillStyle = '#1B2A4A';
+    ctx.beginPath();
+    ctx.moveTo(hx + 90, base + 10);
+    ctx.quadraticCurveTo(hx + 40, hy + 40, hx, hy + 8);
+    ctx.lineTo(hx + 34, hy - 14);
+    ctx.quadraticCurveTo(hx + 90, hy + 20, hx + 130, base + 10);
+    ctx.closePath(); ctx.fill();
+    // orange cuff
+    ctx.fillStyle = '#FF6B35'; ctx.beginPath(); ctx.ellipse(hx + 16, hy + 2, 20, 12, -0.5, 0, Math.PI * 2); ctx.fill();
+    // mitten
+    ctx.fillStyle = '#2c3e63';
+    ctx.beginPath(); ctx.ellipse(hx, hy - 6, 24, 19, -0.35, 0, Math.PI * 2); ctx.fill();
+    // snowball in hand (if ammo)
+    if (h.snowballs > 0 && !h.crafting) {
+      ctx.fillStyle = '#ffffff'; ctx.strokeStyle = '#bcd7e8';
+      ctx.beginPath(); ctx.arc(hx - 6, hy - 18, 15 + charge * 3, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    }
+    // crafting: both mittens pressing snow at screen bottom center
+    if (h.crafting) {
+      const t = 1 - h.craftTimer / C.craft.seconds;
+      const squeeze = Math.sin(now / 90) * 6;
+      ctx.fillStyle = '#2c3e63';
+      ctx.beginPath(); ctx.ellipse(cx - 46 + squeeze, base - 58, 26, 20, 0.4, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(cx + 46 - squeeze, base - 58, 26, 20, -0.4, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.strokeStyle = '#bcd7e8';
+      ctx.beginPath(); ctx.arc(cx, base - 66, 17 + t * 6, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    }
+  }
+
+  _renderCrosshair(ctx, now) {
+    const cx = this.vw / 2, cy = this.vh / 2;
+    const h = this.human;
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.lineWidth = 2;
+    const gap = 5 + (this.mouse.down ? E.chargeFromMs(performance.now() - this.mouse.downAt) * 8 : 0);
+    const len = 8;
+    ctx.beginPath();
+    ctx.moveTo(cx - gap - len, cy); ctx.lineTo(cx - gap, cy);
+    ctx.moveTo(cx + gap, cy); ctx.lineTo(cx + gap + len, cy);
+    ctx.moveTo(cx, cy - gap - len); ctx.lineTo(cx, cy - gap);
+    ctx.moveTo(cx, cy + gap); ctx.lineTo(cx, cy + gap + len);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.9)'; ctx.fillRect(cx - 1, cy - 1, 2, 2);
+    // charge meter under crosshair
+    if (this.mouse.down && h.alive && !h.crafting) {
+      const charge = E.chargeFromMs(performance.now() - this.mouse.downAt);
+      const bw = 90;
+      ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.fillRect(cx - bw / 2, cy + 26, bw, 7);
+      ctx.fillStyle = charge > 0.85 ? '#DC143C' : '#FF6B35';
+      ctx.fillRect(cx - bw / 2, cy + 26, bw * charge, 7);
+      ctx.fillStyle = '#fff'; ctx.font = '11px system-ui'; ctx.textAlign = 'center';
+      ctx.fillText(`${Math.round(E.rangeForCharge(charge) / 10)}m`, cx, cy + 47);
+    }
+    // craft countdown ring around crosshair
+    if (h.crafting) {
+      const frac = 1 - h.craftTimer / C.craft.seconds;
+      const col = frac < 0.5 ? '#ffffff' : frac < 0.85 ? '#FF6B35' : '#DC143C';
+      ctx.strokeStyle = col; ctx.lineWidth = 5;
+      ctx.beginPath(); ctx.arc(cx, cy, 34, -Math.PI / 2, -Math.PI / 2 + frac * Math.PI * 2); ctx.stroke();
+      ctx.fillStyle = col; ctx.font = 'bold 20px system-ui'; ctx.textAlign = 'center';
+      ctx.fillText(String(Math.ceil(h.craftTimer)), cx, cy + 7);
+      ctx.font = 'bold 13px system-ui';
+      ctx.fillText('제작 중 — 무방비!', cx, cy + 62);
+    }
+    // hit marker
+    if (now < this.hitMarkerUntil) {
+      ctx.strokeStyle = 'rgba(255,80,60,0.95)'; ctx.lineWidth = 3;
+      const o = 7, l = 8;
+      ctx.beginPath();
+      ctx.moveTo(cx - o - l, cy - o - l); ctx.lineTo(cx - o, cy - o);
+      ctx.moveTo(cx + o, cy - o); ctx.lineTo(cx + o + l, cy - o - l);
+      ctx.moveTo(cx - o - l, cy + o + l); ctx.lineTo(cx - o, cy + o);
+      ctx.moveTo(cx + o, cy + o); ctx.lineTo(cx + o + l, cy + o + l);
+      ctx.stroke();
+    }
+  }
+
+  // ---- HUD (DOM) -------------------------------------------------------------
   _renderHud() {
     if (this.scene !== 'play' && this.scene !== 'drop') { this.hud.style.display = 'none'; return; }
     this.hud.style.display = 'block';
@@ -1090,28 +1369,40 @@ class SnowApp {
     const surv = E.aliveCount(g);
     const act = actForSurvivors(surv);
     const nextShrink = Math.max(0, Math.ceil(g.zone.nextShrink - g.t));
-    const mm = this._showMinimap ? this._minimapHtml() : '';
-    // build via DOM (no innerHTML injection of dynamic user data; static template)
     this.hud.textContent = '';
     const top = el('div', 'sr-hud-top');
-    top.appendChild(el('div', 'sr-hud-surv', `생존 ${surv}/${C.match.total}`));
+    top.appendChild(el('div', 'sr-hud-surv', `생존 ${surv}`));
     top.appendChild(el('div', 'sr-hud-act', act.title));
-    top.appendChild(el('div', 'sr-hud-zone', `구역 축소 ${nextShrink}s`));
+    top.appendChild(el('div', 'sr-hud-zone', `⛈ ${nextShrink}s`));
     this.hud.appendChild(top);
 
+    // bottom-left: HP
     const bl = el('div', 'sr-hud-bl');
-    // hp bar
     const hpWrap = el('div', 'sr-hp');
     const hpFill = el('div', 'sr-hp-fill'); hpFill.style.width = Math.max(0, h.hp) + '%';
     hpFill.style.background = h.hp > 50 ? '#7FFFD4' : h.hp > 25 ? '#FF6B35' : '#DC143C';
-    hpWrap.appendChild(hpFill); hpWrap.appendChild(el('span', 'sr-hp-txt', `HP ${Math.max(0, Math.round(h.hp))}`));
+    hpWrap.appendChild(hpFill); hpWrap.appendChild(el('span', 'sr-hp-txt', `${Math.max(0, Math.round(h.hp))}`));
     bl.appendChild(hpWrap);
-    bl.appendChild(el('div', 'sr-ammo', `❄ 눈뭉치 ${h.snowballs}`));
-    bl.appendChild(el('div', 'sr-tac', `설벽 ${h.walls}/${C.wall.maxPerPlayer} · 미끼 ${h.decoys}/${C.decoy.maxPerPlayer}`));
-    if (this.scene === 'drop') bl.appendChild(el('div', 'sr-drop', `낙하 중… 착지 ${Math.max(0, Math.ceil(20 - this.dropT))}s`));
+    if (this.scene === 'drop') bl.appendChild(el('div', 'sr-drop', `낙하 중 — 착지 ${Math.max(0, Math.ceil(8 - this.dropT))}s (클릭=낙하 지점)`));
     this.hud.appendChild(bl);
 
-    if (this._showMinimap) this.hud.appendChild(this._minimapEl());
+    // bottom-right: ammo + tactical (FPS style)
+    const br = el('div', 'sr-hud-br');
+    br.appendChild(el('div', 'sr-ammo-big', `${h.snowballs}`));
+    br.appendChild(el('div', 'sr-ammo-cap', '❄ SNOWBALLS'));
+    br.appendChild(el('div', 'sr-tac', `Q 설벽 ${h.walls}/${C.wall.maxPerPlayer} · F 미끼 ${h.decoys}/${C.decoy.maxPerPlayer}`));
+    this.hud.appendChild(br);
+
+    // kill feed (top-right)
+    const feedNow = performance.now();
+    this.killFeed = this.killFeed.filter((k) => k.until > feedNow);
+    if (this.killFeed.length) {
+      const feed = el('div', 'sr-killfeed');
+      for (const k of this.killFeed) feed.appendChild(el('div', 'sr-kf-row', k.text));
+      this.hud.appendChild(feed);
+    }
+
+    if (this._showMinimap && this.scene === 'play') this.hud.appendChild(this._minimapEl());
 
     if (this._toastText && performance.now() < this._toastUntil) {
       this.hud.appendChild(el('div', 'sr-toast', this._toastText));
@@ -1120,20 +1411,27 @@ class SnowApp {
 
   _minimapEl() {
     const g = this.game; const box = el('div', 'sr-minimap');
-    const cv = document.createElement('canvas'); cv.width = 160; cv.height = 160; box.appendChild(cv);
-    const x = cv.getContext('2d'); const sc = 160 / C.map.size;
-    x.fillStyle = 'rgba(13,27,42,0.85)'; x.fillRect(0, 0, 160, 160);
-    // zone
-    x.strokeStyle = '#fff'; x.lineWidth = 1; x.beginPath(); x.arc(g.zone.cx * sc, g.zone.cy * sc, g.zone.radius * sc, 0, Math.PI * 2); x.stroke();
-    // piles within 30m (300u) of human
-    for (const pile of g.piles) { if (Math.hypot(pile.x - this.human.x, pile.y - this.human.y) < 300 && pile.cooldownUntil <= g.t) { x.fillStyle = '#A8D8EA'; x.fillRect(pile.x * sc - 1, pile.y * sc - 1, 3, 3); } }
-    // players
-    for (const p of g.players) { if (!p.alive) continue; x.fillStyle = p.id === g._humanId ? '#FF6B35' : (p.isNpc ? '#9E9E9E' : '#fff'); x.beginPath(); x.arc(p.x * sc, p.y * sc, p.id === g._humanId ? 3 : 2, 0, Math.PI * 2); x.fill(); }
+    const cv = document.createElement('canvas'); cv.width = 170; cv.height = 170; box.appendChild(cv);
+    const x = cv.getContext('2d'); const sc = 170 / C.map.size;
+    x.fillStyle = 'rgba(13,27,42,0.88)'; x.fillRect(0, 0, 170, 170);
+    x.strokeStyle = '#fff'; x.lineWidth = 1;
+    x.beginPath(); x.arc(g.zone.cx * sc, g.zone.cy * sc, g.zone.radius * sc, 0, Math.PI * 2); x.stroke();
+    for (const pile of g.piles) { if (pile.cooldownUntil <= g.t) { x.fillStyle = '#A8D8EA'; x.fillRect(pile.x * sc - 1, pile.y * sc - 1, 3, 3); } }
+    for (const p of g.players) {
+      if (!p.alive) continue;
+      x.fillStyle = p.id === g._humanId ? '#FF6B35' : '#9E9E9E';
+      x.beginPath(); x.arc(p.x * sc, p.y * sc, p.id === g._humanId ? 3.4 : 2, 0, Math.PI * 2); x.fill();
+    }
+    // view cone for human
+    const h = this.human;
+    x.strokeStyle = 'rgba(255,107,53,0.8)';
+    x.beginPath(); x.moveTo(h.x * sc, h.y * sc);
+    x.lineTo(h.x * sc + Math.cos(this.yaw) * 14, h.y * sc + Math.sin(this.yaw) * 14); x.stroke();
     return box;
   }
 
   // ---- helpers -------------------------------------------------------------
-  _toast(t, ms = 2600) { this._toastText = t; this._toastUntil = performance.now() + ms; }
+  _toast(t, ms = 3200) { this._toastText = t; this._toastUntil = performance.now() + ms; }
   _btn(label, onClick, primary) { const b = document.createElement('button'); b.className = 'sr-btn' + (primary ? ' primary' : ''); b.textContent = label; b.addEventListener('click', () => { this.audio.resume(); onClick(); }); return b; }
   _stat(label, val) { const d = el('div', 'sr-stat'); d.appendChild(el('div', 'sr-stat-v', String(val))); d.appendChild(el('div', 'sr-stat-l', label)); return d; }
 
@@ -1143,12 +1441,28 @@ class SnowApp {
     if (state === 'title') { this._showTitle(); return; }
     this.newGame(42);
     if (state === 'drop') return;
-    if (state === 'play') { this._enterPlay(); this.human.snowballs = 10; return; }
+    if (state === 'play' || state === 'fps') {
+      this._enterPlay(); this.human.snowballs = 10;
+      // stage a scene: put some NPCs & a pile in front of camera for the screenshot
+      const h = this.human;
+      this.yaw = 0;
+      const near = this.game.players.filter((p) => p.isNpc).slice(0, 4);
+      const dists = [90, 170, 300, 460];
+      near.forEach((p, i) => { p.x = h.x + dists[i]; p.y = h.y + (i - 1.5) * 60; });
+      this.game.piles.push({ id: 90001, x: h.x + 46, y: h.y + 14, cooldownUntil: 0 });
+      return;
+    }
+    if (state === 'craft') {
+      this._enterPlay();
+      const h = this.human;
+      this.game.piles.push({ id: 90002, x: h.x, y: h.y, cooldownUntil: 0 });
+      E.startCraft(this.game, h);
+      return;
+    }
     if (state === 'result' || state === 'win') {
       this._enterPlay();
-      // fast-forward: force everyone but human dead for a win, or human dead for lose
       if (state === 'win') { for (const p of this.game.players) if (p.id !== this.game._humanId) E.setHp(this.game, p, 0); }
-      else { const h = this.human; for (const p of this.game.players) if (p.id !== h.id) { /* keep */ } E.setHp(this.game, h, 0); }
+      else E.setHp(this.game, this.human, 0);
       this._showResult(); return;
     }
   }
@@ -1163,7 +1477,14 @@ class SnowApp {
       E.startCraft(g, h); E.step(g, 3.01); chk('3초 제작 +10', h.snowballs === 10, String(h.snowballs));
       const sb = E.throwSnowball(g, h, 0, 1); chk('투척 생성', !!sb);
       chk('에셋 로드', Object.values(this.images).some((v) => v));
-      // run to completion
+      // FPS projection sanity: a point straight ahead projects to screen center X
+      this.game = g; this.human = h; this.yaw = 0;
+      const p = this._project(h.x + 100, h.y);
+      chk('FPS 투영(전방→화면 중앙)', p && Math.abs(p.sx - this.vw / 2) < 1, p ? `sx=${p.sx.toFixed(1)}` : 'null');
+      const pr = this._project(h.x + 100, h.y + 50);
+      chk('FPS 투영(우측→화면 우측)', pr && pr.sx > this.vw / 2, pr ? `sx=${pr.sx.toFixed(1)}` : 'null');
+      const far = this._project(h.x + 400, h.y), nearp = this._project(h.x + 60, h.y);
+      chk('원근 스케일(가까울수록 큼)', far && nearp && nearp.scale > far.scale);
       let guard = 0; while (!g.over && guard++ < 12000) { const hh = E.humanPlayer(g); if (hh.alive) { if (!hh.npc) hh.npc = { state: 'PATROL', reactTimer: 0 }; const w = hh.isNpc; hh.isNpc = true; E.npcThink(g, hh, 0.1); hh.isNpc = w; } E.step(g, 0.1); }
       chk('매치 완주(승자 1인)', g.over && E.aliveCount(g) === 1, `t=${g.t.toFixed(0)}s`);
     } catch (e) { rep.errors.push(String(e && e.message || e)); }
