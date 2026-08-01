@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "bedrock-image": {
+      "command": "node",
+      "args": [
+        "--env-file-if-exists=.env.local",
+        "image-mcp/server.mjs"
+      ]
+    }
+  }
+}
