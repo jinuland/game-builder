@@ -391,6 +391,15 @@ export class SnowApp {
       diffRow.appendChild(b);
     }
     c.appendChild(diffRow);
+    // match size (total players) selection
+    this._total = this._total || C.match.total;
+    const sizeRow = document.createElement('div'); sizeRow.className = 'sr-diffrow';
+    for (const n of C.match.totalOptions) {
+      const b = document.createElement('button'); b.className = 'sr-diff' + (this._total === n ? ' on' : ''); b.textContent = `${n}인`;
+      b.addEventListener('click', () => { this._total = n; this._showTitle(); });
+      sizeRow.appendChild(b);
+    }
+    c.appendChild(sizeRow);
     // class (character trait) selection
     this._classId = this._classId || 'jack';
     const clsHead = document.createElement('p'); clsHead.className = 'sr-sub'; clsHead.textContent = '캐릭터 특성 선택';
@@ -415,7 +424,7 @@ export class SnowApp {
     const mute = this._btn(this.audio.muted ? '🔇 사운드' : '🔊 사운드', () => { this.audio.setMuted(!this.audio.muted); mute.textContent = this.audio.muted ? '🔇 사운드' : '🔊 사운드'; });
     c.appendChild(mute);
     const foot = document.createElement('p'); foot.className = 'sr-foot';
-    foot.textContent = 'Three.js 3D · 화면 클릭=조준 잠금(ESC 해제) · WASD 이동 · 마우스 시점 · 좌클릭 홀드 투척 · E 제작 · Q 설벽 · F 미끼 · C 엄폐 · M 지도';
+    foot.textContent = 'Three.js 3D · 화면 클릭=조준 잠금(ESC 해제) · WASD 이동 · Space 점프 · 마우스 시점 · 좌클릭 홀드 투척 · E 제작 · Q 설벽 · F 미끼 · C 엄폐 · M 지도';
     c.appendChild(foot);
     this.overlay.innerHTML = ''; this.overlay.appendChild(c); this.overlay.style.display = 'flex';
   }
@@ -428,7 +437,8 @@ export class SnowApp {
     const lines = [
       '🖱 화면 클릭 — 마우스 조준 잠금 (ESC로 해제)',
       '마우스 — 시점 회전 (위로 밀면 위를 봄 · 타이틀에서 반전 가능)',
-      'W A S D — 보는 방향 기준 이동 · C — 엄폐(피해 절반)',
+      'W A S D — 보는 방향 기준 이동 · Space — 점프(공중에서 눈뭉치 회피) · C — 엄폐(피해 절반)',
+      '🛡 방패 아이템 — 들고 있는 동안 피격 완전 방어, 내구도 4회 소진 시 파괴',
       '좌클릭 홀드 → 놓기 — 눈뭉치 투척 (오래 누를수록 멀리)',
       'E — 눈더미(반짝이는 흰 둔덕) 앞에서 3초 제작 +10 (무방비!)',
       'Q — 설벽 건설 (4개) · F — 눈사람 미끼 (5개) · M — 지도',
@@ -443,7 +453,7 @@ export class SnowApp {
   newGame(seed = this.seed) {
     this.audio.init(); this.audio.resume();
     const s = seed != null ? seed : (Math.floor(performance.now()) % 100000) + 1;
-    this.game = E.createGame(s, { total: C.match.total, difficulty: this._difficulty || 'normal', classId: this._classId || 'jack' });
+    this.game = E.createGame(s, { total: this._total || C.match.total, difficulty: this._difficulty || 'normal', classId: this._classId || 'jack' });
     this.human = E.humanPlayer(this.game);
     this._buildWorld();
     this.sceneName = 'drop';
@@ -499,6 +509,7 @@ export class SnowApp {
         if (e.code === 'KeyE') this._tryCraft();
         if (e.code === 'KeyQ') this._act('wall');
         if (e.code === 'KeyF') this._act('decoy');
+        if (e.code === 'Space' && E.jump(this.game, this.human)) this.audio.throw();
         if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space'].includes(e.code)) e.preventDefault();
       }
       if (e.code === 'KeyM') this._showMinimap = !this._showMinimap;
@@ -608,9 +619,16 @@ export class SnowApp {
     if ((g.kills[h.id] || 0) > killsBefore) this.hitMarkerUntil = performance.now() + 400;
     else if (g.stats.hits > hitsBefore) this.hitMarkerUntil = Math.max(this.hitMarkerUntil, performance.now() + 220);
     if (beforeAlive && !h.alive) this._humanLastCause = '눈뭉치에 맞아 탈락했습니다.';
-    for (const e of g.events.splice(0).filter((ev) => ev.type === 'kill')) {
-      const by = g.players.find((p) => p.id === e.by), v = g.players.find((p) => p.id === e.victim);
-      if (by && v) this.killFeed.push({ text: `${by.name} ❄→ ${v.name}`, until: performance.now() + 4200 });
+    for (const e of g.events.splice(0)) {
+      if (e.type === 'kill') {
+        const by = g.players.find((p) => p.id === e.by), v = g.players.find((p) => p.id === e.victim);
+        if (by && v) this.killFeed.push({ text: `${by.name} ❄→ ${v.name}`, until: performance.now() + 4200 });
+      }
+      if (e.type === 'shieldBlock' && e.id === h.id) {
+        this.shieldFlashUntil = performance.now() + 300;
+        this.audio.wall();
+        if (e.left === 0) this._toast('🛡 방패가 부서졌습니다!');
+      }
     }
     if (this.killFeed.length > 5) this.killFeed = this.killFeed.slice(-5);
     const surv = E.aliveCount(g);
@@ -621,7 +639,7 @@ export class SnowApp {
     if (h.alive) {
       const got = E.tryPickup(g, h);
       if (got === 'heal') { this.audio.craftDone(); this._toast(`💊 힐팩 +${C.items.healAmount} HP`); }
-      if (got === 'shield') { this.audio.wall(); this._toast(`🛡 방패 획득 — 다음 ${C.items.shieldHits}회 피격 피해 ${Math.round((1 - C.items.shieldDamageMul) * 100)}% 감소`); }
+      if (got === 'shield') { this.audio.wall(); this._toast(`🛡 방패 획득 — 다음 ${C.items.shieldHits}회 피격 완전 방어 (내구도 ${C.items.shieldHits})`); }
     }
     if (this.viewKick > 0) this.viewKick = Math.max(0, this.viewKick - dt * 4);
     if (g.over) this._showResult();
@@ -634,9 +652,10 @@ export class SnowApp {
     // camera
     const h = this.human;
     const bob = Math.sin(this.bobT) * 0.8;
-    this.camera.position.set(h.x, EYE + bob, h.y);
+    const eyeY = EYE + bob + (h.z || 0);   // jump raises the camera
+    this.camera.position.set(h.x, eyeY, h.y);
     const lookX = h.x + Math.cos(this.yaw) * Math.cos(this.pitch) * 10;
-    const lookY = EYE + bob + Math.sin(this.pitch) * 10;
+    const lookY = eyeY + Math.sin(this.pitch) * 10;
     const lookZ = h.y + Math.sin(this.yaw) * Math.cos(this.pitch) * 10;
     this.camera.lookAt(lookX, lookY, lookZ);
 
@@ -648,17 +667,30 @@ export class SnowApp {
       fig.visible = p.alive;
       const hpS = this._hpSprite(p);
       if (!p.alive) { if (hpS) hpS.visible = false; continue; }
-      fig.position.set(p.x, 0, p.y);
+      fig.position.set(p.x, p.z || 0, p.y);
       fig.rotation.y = -p.aim + Math.PI / 2;
       const swing = Math.sin(now / 130 + p.id) * 0.5;
       const ud = fig.userData;
       if (ud.legL) { ud.legL.rotation.x = swing; ud.legR.rotation.x = -swing; }
       if (p.crafting) { ud.armL.rotation.x = -1.2; ud.armR.rotation.x = -1.2; }
       else { ud.armL.rotation.x = swing * 0.5; ud.armR.rotation.x = -swing * 0.5; }
+      // shield bubble: translucent blue sphere while durability remains
+      if (p.shieldHits > 0 && !ud.shield) {
+        const bub = new THREE.Mesh(
+          new THREE.SphereGeometry(CHAR_SCALE * 1.45, 18, 14),
+          new THREE.MeshBasicMaterial({ color: 0x4d9fff, transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending, depthWrite: false }),
+        );
+        bub.position.y = CHAR_SCALE * 1.25;
+        fig.add(bub); ud.shield = bub;
+      }
+      if (ud.shield) {
+        ud.shield.visible = p.shieldHits > 0;
+        if (p.shieldHits > 0) ud.shield.material.opacity = 0.16 + Math.sin(now / 180) * 0.07;
+      }
       // HP bar sprite hovers over the head, redrawn when hp changes
       if (hpS) {
         hpS.visible = true;
-        hpS.position.set(p.x, CHAR_SCALE * 2.75, p.y);
+        hpS.position.set(p.x, CHAR_SCALE * 2.75 + (p.z || 0), p.y);
         if (hpS.userData.lastHp !== p.hp || hpS.userData.lastShield !== p.shieldHits) this._paintHpSprite(hpS, p);
       }
     }
@@ -895,6 +927,14 @@ export class SnowApp {
       gEdge.addColorStop(0, 'rgba(220,20,60,0)'); gEdge.addColorStop(1, 'rgba(220,20,60,0.5)');
       ctx.fillStyle = gEdge; ctx.fillRect(0, 0, this.vw, this.vh);
     }
+    // shield: steady blue edge glow while held, bright flash on block
+    if (h.shieldHits > 0 || now < (this.shieldFlashUntil || 0)) {
+      const flash = now < (this.shieldFlashUntil || 0);
+      const a = flash ? 0.45 : 0.14 + Math.sin(now / 300) * 0.04;
+      const gEdge = ctx.createRadialGradient(this.vw / 2, this.vh / 2, this.vh * 0.38, this.vw / 2, this.vh / 2, this.vh * 0.72);
+      gEdge.addColorStop(0, 'rgba(77,159,255,0)'); gEdge.addColorStop(1, `rgba(77,159,255,${a})`);
+      ctx.fillStyle = gEdge; ctx.fillRect(0, 0, this.vw, this.vh);
+    }
 
     this._renderViewModel(ctx, now);
     this._renderCrosshair(ctx, now);
@@ -1015,7 +1055,7 @@ export class SnowApp {
     hpFill.style.background = h.hp > maxHp * 0.5 ? '#7FFFD4' : h.hp > maxHp * 0.25 ? '#FF6B35' : '#DC143C';
     hpWrap.appendChild(hpFill); hpWrap.appendChild(el('span', 'sr-hp-txt', `${Math.max(0, Math.round(h.hp))}/${maxHp}`));
     bl.appendChild(hpWrap);
-    if (h.shieldHits > 0) bl.appendChild(el('div', 'sr-shield', `🛡 방패 ${h.shieldHits}회`));
+    if (h.shieldHits > 0) bl.appendChild(el('div', 'sr-shield', `🛡 방패 내구도 ${h.shieldHits}/${C.items.shieldHits} — 피격 완전 방어`));
     const cls = CLASSES[h.classId];
     if (cls) bl.appendChild(el('div', 'sr-class-tag', cls.name));
     if (this.sceneName === 'drop') bl.appendChild(el('div', 'sr-drop', `낙하 중 — 착지 ${Math.max(0, Math.ceil(8 - this.dropT))}s (지도 클릭=낙하 지점)`));

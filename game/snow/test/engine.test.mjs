@@ -234,7 +234,7 @@ test('TC-022 movePlayer blocked during crafting', () => {
 });
 
 // ---- v3 features: pickups, shield, classes, pile respawn -------------------
-import { tryPickup, applyClass } from '../src/engine.js';
+import { tryPickup, applyClass, jump } from '../src/engine.js';
 import { CLASSES } from '../src/config.js';
 
 test('TC-023 heal pack restores hp and goes on cooldown', () => {
@@ -255,15 +255,43 @@ test('TC-024 heal pack not consumed at full hp', () => {
   assert.equal(tryPickup(g, p), null);
 });
 
-test('TC-025 shield reduces damage for N hits then expires', () => {
+test('TC-025 shield fully blocks hits while durability lasts, then breaks', () => {
   const g = createGame(1, { total: 2 });
   const p = g.players[1]; p.hp = 100; p.cover = false;
   g.pickups = [{ id: 1, kind: 'shield', x: p.x, y: p.y, takenUntil: 0 }];
   assert.equal(tryPickup(g, p), 'shield');
   assert.equal(p.shieldHits, C.items.shieldHits);
-  const dealt = damage(g, p, 20);
-  assert.equal(dealt, 20 * C.items.shieldDamageMul, 'shield reduces damage');
-  assert.equal(p.shieldHits, C.items.shieldHits - 1, 'charge consumed');
+  for (let i = 0; i < C.items.shieldHits; i++) {
+    const dealt = damage(g, p, 20);
+    assert.equal(dealt, 0, `hit ${i + 1} fully blocked`);
+  }
+  assert.equal(p.hp, 100, 'no damage while shield held');
+  assert.equal(p.shieldHits, 0, 'durability spent');
+  const after = damage(g, p, 20);
+  assert.equal(after, 20, 'broken shield no longer protects');
+});
+
+test('TC-029 jump: ballistic arc, no double jump, airborne dodges snowballs', () => {
+  const g = createGame(1, { total: 2 });
+  const p = human(g);
+  assert.equal(jump(g, p), true);
+  assert.equal(jump(g, p), false, 'no double jump while airborne');
+  let apex = 0;
+  for (let i = 0; i < 200 && (p.z > 0 || p.vz > 0); i++) { step(g, 1 / 60); apex = Math.max(apex, p.z); }
+  assert.ok(apex > C.player.jumpDodgeZ, `apex ${apex.toFixed(1)} clears dodge height`);
+  assert.equal(p.z, 0, 'lands back on the ground');
+  assert.equal(jump(g, p), true, 'can jump again after landing');
+  // airborne target is missed by a snowball
+  const a = g.players[1]; a.x = p.x - 60; a.y = p.y; addSnowballs(a, 1);
+  p.z = C.player.jumpDodgeZ + 2; p.vz = 0;
+  const hp0 = p.hp;
+  throwSnowball(g, a, 0, 0.2);
+  for (let i = 0; i < 90 && g.snowballs.length; i++) {
+    g.snowballs[0].x = p.x; g.snowballs[0].y = p.y; // force overlap
+    p.z = C.player.jumpDodgeZ + 2; p.vz = 2;        // hold airborne
+    step(g, 1 / 60);
+  }
+  assert.equal(p.hp, hp0, 'airborne player not hit');
 });
 
 test('TC-026 class multipliers: sniper longer range, tank more hp & faster craft', () => {

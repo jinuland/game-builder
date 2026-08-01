@@ -113,9 +113,47 @@ type DesignRequest = {
   concept?: unknown;
   feedback?: string;
   actCount?: number | "auto";
+  renderMode?: "auto" | "2d" | "3d"; // presentation axis, independent of genre
   chat?: ChatTurn[];      // conversation history for interactive story refinement
   message?: string;       // latest user instruction for "refine"
 };
+
+// Resolve the presentation mode. "auto" stays conservative: 3D only when the
+// idea strongly signals it (FPS/first-person/battle-royale-like keywords) —
+// 3D generation has a much higher failure rate, so 2D is the safe default.
+function resolveRenderMode(body: DesignRequest): "2d" | "3d" {
+  if (body.renderMode === "2d" || body.renderMode === "3d") return body.renderMode;
+  const idea = (body.idea ?? "").toLowerCase();
+  const hints3d = [/1인칭/, /일인칭/, /fps/i, /3d/i, /삼차원/, /배틀\s*(그라운드|로얄)/, /tps/i, /오픈\s*월드/];
+  return hints3d.some((re) => re.test(idea)) ? "3d" : "2d";
+}
+
+// Technical directives injected into the implementation spec per render mode.
+// The 3D recipe follows the pattern proven by Snow Royale in this repo:
+// pure engine / renderer split + Three.js + headless WebGL validation.
+function renderModeDirectives(mode: "2d" | "3d") {
+  if (mode === "3d") {
+    return `## 표현 방식: 3D (Three.js)
+- Three.js(MIT)를 사용한 WebGL 3D로 구현한다. 외부 3D 모델 다운로드 없이 프리미티브 조합(BoxGeometry/SphereGeometry/ConeGeometry 등)으로 로우폴리 캐릭터·소품을 프로시저럴하게 만든다.
+- 게임 로직은 DOM/Three.js와 완전히 분리된 순수 엔진 모듈(node에서 단독 테스트 가능)로 작성하고, 렌더러는 엔진 상태를 읽기만 하는 동기화 계층으로 만든다.
+- 카메라 좌표계·마우스 시점(상하 반전 여부)·시야각을 첫 수직 슬라이스에서 확정하고 스크린샷으로 검증한다. 1인칭이면 Pointer Lock API(e.code 기반 키 입력, 한글 IME 대응)를 사용한다.
+- esbuild 등으로 단일 bundle.js를 만들고, headless Chrome(--use-angle=swiftshader --enable-unsafe-swiftshader)에서 WebGL 렌더·핵심 상태 스크린샷·인브라우저 검증 리포트를 증거로 남긴다.
+- 조명(Hemisphere+Directional), 안개, 파티클 같은 분위기 요소와 HUD(2D 오버레이 캔버스/DOM)를 분리 구현한다.`;
+  }
+  return `## 표현 방식: 2D (Canvas/DOM)
+- 2D Canvas 또는 DOM/SVG로 구현한다. 생성 이미지 에셋(캐릭터·배경)을 스프라이트로 직접 활용한다.
+- 게임 로직은 렌더링과 분리된 순수 엔진 모듈(node에서 단독 테스트 가능)로 작성한다.
+- 해상도 독립적인 좌표계와 devicePixelRatio 대응을 첫 수직 슬라이스에서 확정한다.`;
+}
+
+// Early-research contract: before implementation, the agent must search for
+// domain/tech references and fold findings back into the goals.
+const EARLY_RESEARCH_BLOCK = `## 초반 리서치와 Goal 보강 (필수 선행 단계)
+구현을 시작하기 전에 아래 리서치를 먼저 수행하고, 결과를 RESEARCH.md에 기록한 뒤 구현 Goal을 보강한다.
+1. 참조 장르의 대표작을 검색해 핵심 재미 요소·조작감·화면 구성·난이도 곡선을 3개 이상 요약한다.
+2. 선택된 표현 방식의 기술 레퍼런스(예: 3D면 Three.js 공식 문서·Pointer Lock API, 2D면 Canvas 최적화 패턴)를 검색해 구현에 쓸 구체 기법을 정리한다.
+3. 리서치에서 발견한 개선점을 각 GOAL의 tasks/acceptance에 반영해 보강하고, 보강 내역을 RESEARCH.md의 "Goal 보강" 절에 남긴다. 리서치 없이 구현에 착수하지 않는다.
+4. 구현 중 막히는 문제(카메라, 충돌, 밸런스 등)도 즉시 검색으로 해법을 찾고 출처를 기록한다.`;
 let activeGoalRequestId: string | null = null;
 
 // Resolve the working genre: a preset profile, or a synthesized profile for a
@@ -183,6 +221,7 @@ function composeImplementationPrompt(
   story: unknown,
   concept: unknown,
   goals: GeneratedGoals,
+  renderMode: "2d" | "3d" = "2d",
 ) {
   const sections = (record: Record<string, string[]> | undefined) =>
     Object.entries(record ?? {}).map(([title, items]) => `### ${title}\n${markdownList(items)}`).join("\n\n");
@@ -210,6 +249,10 @@ ${goals.gameGoal}
 
 장르: ${genre.name}
 플레이어 판타지: ${genre.playerFantasy}
+
+${EARLY_RESEARCH_BLOCK}
+
+${renderModeDirectives(renderMode)}
 
 ## 확정 스토리
 \`\`\`json
@@ -264,6 +307,7 @@ ${sections(goals.funIterationPlan)}
 ${sections(goals.completionContract)}
 
 ## 강제 실행 순서
+0. 초반 리서치를 수행하고(위 "초반 리서치와 Goal 보강" 계약) 발견 사항으로 구현 Goal을 보강한 뒤 RESEARCH.md에 기록한다.
 1. 저장소 전체 파일과 기존 변경을 검사하고 실행·테스트·배포 명령을 확인한다.
 2. 모든 요구사항을 REQ ID 체크리스트로 만들고 구현 파일·검증 방법·증거 열을 가진 REQUIREMENTS-TRACE.md를 만든다.
 3. 게임 상태 머신, 입력, 렌더링, 충돌, 저장 스키마를 먼저 설계한 뒤 수직 슬라이스를 구현한다.
@@ -408,7 +452,9 @@ completionContract에는 다음 실행 계약을 빠짐없이 포함한다:
       // This schema is intentionally large. Bedrock's strict tool grammar compiler
       // rejects it before inference, so validate the returned structure with the
       // server-side quality gate below instead.
-      const generated = await generate(goalsSchema, "create_validated_implementation_goals", system, { genre: { name: genre.name, playerFantasy: genre.playerFantasy }, approvedStory: normalizedStory.story, approvedGameConcept: body.concept }, false, requestSignal, 32_000);
+      const renderMode = resolveRenderMode(body);
+      const generated = await generate(goalsSchema, "create_validated_implementation_goals", `${system}
+표현 방식은 "${renderMode === "3d" ? "3D(Three.js WebGL, 엔진/렌더러 분리, 프로시저럴 로우폴리)" : "2D(Canvas/DOM, 생성 이미지 스프라이트 활용)"}"로 확정되었다. artDirection의 카메라와 구도, goals의 렌더링 관련 task·acceptance를 이 표현 방식에 맞게 작성한다.${renderMode === "3d" ? " 3D는 카메라 좌표계·마우스 시점·headless WebGL 검증을 acceptance에 반드시 포함한다." : ""}`, { genre: { name: genre.name, playerFantasy: genre.playerFantasy }, approvedStory: normalizedStory.story, approvedGameConcept: body.concept, renderMode }, false, requestSignal, 32_000);
       const resultSummary = generated.result as GeneratedGoals;
       const repairs = repairGeneratedGoals(resultSummary);
       if (repairs.length) console.warn("[gameforge-design]", JSON.stringify({ event: "goal_auto_repaired", requestId, repairs, at: new Date().toISOString() }));
@@ -417,6 +463,7 @@ completionContract에는 다음 실행 계약을 빠짐없이 포함한다:
         normalizedStory.story,
         body.concept,
         resultSummary,
+        resolveRenderMode(body),
       );
       const outputIssues = validateGeneratedGoals(resultSummary);
       console.log("[gameforge-design]", JSON.stringify({ event: "quality_check", requestId, goalCount: resultSummary.goals?.length ?? 0, promptLength: resultSummary.implementationPrompt?.length ?? 0, validationScore: resultSummary.validation?.score ?? null, issueCount: outputIssues.length, at: new Date().toISOString() }));
@@ -465,8 +512,9 @@ environments는 주요 배경마다 공간 구조, 전경·중경·후경, 랜�
 characterImagePrompts와 environmentImagePrompts는 이미지 모델에 그대로 넣을 수 있도록 스타일·시점·구도·조명·팔레트·배경 투명 여부·금지 요소까지 포함해 각각 최소 3개 작성한다.
 coreMechanics, controls, progression, failureAndRecovery는 각각 최소 3개이며 실제 구현 가능한 규칙과 상태 변화를 포함한다.
 reviewQuestions는 사용자가 취향과 방향을 결정할 수 있는 구체적인 선택 질문을 최소 5개 작성한다.
+표현 방식(renderMode)이 3d면 시점(1인칭/3인칭/탑다운)·카메라 거동·조작을 3D 기준으로, 2d면 화면 구도와 스프라이트 기준으로 기술한다.
 이전 기획안과 사용자 피드백이 있으면 피드백을 우선 반영하되 스토리 온톨로지의 인과관계는 유지한다. 참조작의 고유 캐릭터·명칭·시각 요소를 복제하지 않는다. 한국어로 작성한다.`,
-        { genre, approvedStory: normalizedStory.story, previousConcept: body.concept ?? null, userFeedback: body.feedback?.trim() || null },
+        { genre, approvedStory: normalizedStory.story, previousConcept: body.concept ?? null, userFeedback: body.feedback?.trim() || null, renderMode: resolveRenderMode(body) },
         true,
         requestSignal,
       );

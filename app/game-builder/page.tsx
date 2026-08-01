@@ -34,7 +34,8 @@ const SAVE_KEY = "gameforge:genre-workshop:v2";
 const PROJECTS_KEY = "gameforge:game-projects:v1";
 const ACTIVE_PROJECT_KEY = "gameforge:active-project:v1";
 const GENERATION_TIMEOUT_MS = 15 * 60 * 1_000;
-type SavedProject = { id: string; name: string; genreId: string; customGenre?: string; idea: string; actCount: number | "auto"; story: StoryDesign | null; concept: GameConcept | null; feedback: string; goals: GoalPackage | null; updatedAt: string };
+type RenderMode = "auto" | "2d" | "3d";
+type SavedProject = { id: string; name: string; genreId: string; customGenre?: string; idea: string; actCount: number | "auto"; renderMode?: RenderMode; story: StoryDesign | null; concept: GameConcept | null; feedback: string; goals: GoalPackage | null; updatedAt: string };
 
 function download(name: string, value: unknown) {
   const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: "application/json" }));
@@ -64,6 +65,7 @@ export default function OntologyBuilder() {
   const [customGenre, setCustomGenre] = useState("");
   const [idea, setIdea] = useState("밤마다 기억을 먹는 괴물에게서 마을과 주민들의 추억을 지키는 게임. 강한 방어시설을 만들려면 누군가의 기억을 희생해야 한다.");
   const [actCount, setActCount] = useState<number | "auto">("auto");
+  const [renderMode, setRenderMode] = useState<RenderMode>("auto");
   const [story, setStory] = useState<StoryDesign | null>(null);
   const [concept, setConcept] = useState<GameConcept | null>(null);
   const [feedback, setFeedback] = useState("");
@@ -123,6 +125,7 @@ export default function OntologyBuilder() {
         if (saved?.customGenre) setCustomGenre(saved.customGenre);
         if (saved?.idea) setIdea(saved.idea);
         if (saved?.actCount) setActCount(saved.actCount);
+        if (saved?.renderMode) setRenderMode(saved.renderMode);
         if (saved?.story) setStory(saved.story);
         if (saved?.concept) setConcept(saved.concept);
         if (saved?.feedback) setFeedback(saved.feedback);
@@ -139,7 +142,7 @@ export default function OntologyBuilder() {
     const timer = window.setTimeout(() => {
       const id = projectId || crypto.randomUUID();
       if (!projectId) setProjectId(id);
-      const project: SavedProject = { id, name: projectName.trim() || story?.title || "새 게임", genreId, customGenre, idea, actCount, story, concept, feedback, goals, updatedAt: new Date().toISOString() };
+      const project: SavedProject = { id, name: projectName.trim() || story?.title || "새 게임", genreId, customGenre, idea, actCount, renderMode, story, concept, feedback, goals, updatedAt: new Date().toISOString() };
       setProjects((current) => {
         const next = [project, ...current.filter((item) => item.id !== id)].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
         localStorage.setItem(PROJECTS_KEY, JSON.stringify(next));
@@ -148,7 +151,7 @@ export default function OntologyBuilder() {
       localStorage.setItem(ACTIVE_PROJECT_KEY, id);
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [projectId, projectName, genreId, customGenre, idea, actCount, story, concept, feedback, goals, hydrated]);
+  }, [projectId, projectName, genreId, customGenre, idea, actCount, renderMode, story, concept, feedback, goals, hydrated]);
 
   useEffect(() => {
     if (!requestStartedAt) return;
@@ -167,7 +170,7 @@ export default function OntologyBuilder() {
     setStatus(action === "story" ? "장르 공식을 아이디어에 매핑해 스토리를 만들고 있습니다…" : action === "concept" ? "스토리를 캐릭터·배경·게임 방식이 보이는 기획안으로 만들고 있습니다…" : "확정된 기획안을 코딩 에이전트용 Goal로 변환하고 있습니다…");
     try {
       const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(GENERATION_TIMEOUT_MS)]);
-      const response = await fetch("/api/ontology/design", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, genreId, customGenre, idea, actCount, story, concept, feedback }), signal });
+      const response = await fetch("/api/ontology/design", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, genreId, customGenre, idea, actCount, renderMode, story, concept, feedback }), signal });
       const data = await response.json() as { result?: StoryDesign | GameConcept | GoalPackage; normalizedStory?: StoryDesign; model?: string; error?: string };
       if (!response.ok || !data.result) throw new Error(data.error ?? "Bedrock 결과를 받지 못했습니다.");
       if (action === "story") {
@@ -255,7 +258,7 @@ export default function OntologyBuilder() {
 
   const save = () => {
     const id = projectId || crypto.randomUUID();
-    const project: SavedProject = { id, name: projectName.trim() || story?.title || "새 게임", genreId, customGenre, idea, actCount, story, concept, feedback, goals, updatedAt: new Date().toISOString() };
+    const project: SavedProject = { id, name: projectName.trim() || story?.title || "새 게임", genreId, customGenre, idea, actCount, renderMode, story, concept, feedback, goals, updatedAt: new Date().toISOString() };
     const next = [project, ...projects.filter((item) => item.id !== id)];
     localStorage.setItem(PROJECTS_KEY, JSON.stringify(next)); localStorage.setItem(ACTIVE_PROJECT_KEY, id);
     setProjectId(id); setProjects(next); setStatus(`“${project.name}” 프로젝트를 저장했습니다.`);
@@ -264,7 +267,7 @@ export default function OntologyBuilder() {
   const loadProject = (id: string) => {
     if (generationLock.current) return;
     const project = projects.find((item) => item.id === id); if (!project) return;
-    setProjectId(project.id); setProjectName(project.name); setGenreId(project.genreId); setCustomGenre(project.customGenre ?? ""); setIdea(project.idea); setActCount(project.actCount); setStory(project.story); setConcept(project.concept ?? null); setFeedback(project.feedback ?? ""); setGoals(validGoalPackage(project.goals ?? undefined) ? project.goals : null);
+    setProjectId(project.id); setProjectName(project.name); setGenreId(project.genreId); setCustomGenre(project.customGenre ?? ""); setIdea(project.idea); setActCount(project.actCount); setRenderMode(project.renderMode ?? "auto"); setStory(project.story); setConcept(project.concept ?? null); setFeedback(project.feedback ?? ""); setGoals(validGoalPackage(project.goals ?? undefined) ? project.goals : null);
     localStorage.setItem(ACTIVE_PROJECT_KEY, project.id); setStatus(`“${project.name}” 프로젝트를 불러왔습니다.`);
   };
 
@@ -315,6 +318,13 @@ export default function OntologyBuilder() {
           <button disabled={!!loading} className={actCount === "auto" ? styles.choiceActive : ""} onClick={() => setActCount("auto")}>자동 · 아이디어에 맞게</button>
           {[3, 5, 7].map((count) => <button key={count} disabled={!!loading} className={actCount === count ? styles.choiceActive : ""} onClick={() => setActCount(count)}>{count === 3 ? "짧게 · 3막" : count === 5 ? "표준 · 5막" : "길게 · 7막"}</button>)}
         </div>
+        <div className={styles.actChoice}><span>표현 방식</span>
+          <button disabled={!!loading} className={renderMode === "auto" ? styles.choiceActive : ""} onClick={() => setRenderMode("auto")}>자동 · 아이디어로 판단</button>
+          <button disabled={!!loading} className={renderMode === "2d" ? styles.choiceActive : ""} onClick={() => setRenderMode("2d")}>2D · 안정적 (권장)</button>
+          <button disabled={!!loading} className={renderMode === "3d" ? styles.choiceActive : ""} onClick={() => setRenderMode("3d")}>3D · Three.js (FPS·탐험형)</button>
+        </div>
+        {renderMode === "3d" && <p className={styles.notice}>3D는 카메라·조명·검증 난도가 높아 구현 시간이 더 걸립니다. Goal에 Three.js 엔진/렌더러 분리와 headless WebGL 검증 지시가 포함됩니다.</p>}
+        {renderMode === "auto" && <p className={styles.notice}>아이디어에 1인칭·FPS·배틀로얄·3D 같은 신호가 있으면 3D, 아니면 2D로 보수적으로 선택합니다.</p>}
         <div className={styles.hiddenFormula}><small>재미 설계 기준</small><strong>{genreId === "custom" ? "아이디어에서 직접 도출" : genre.playerFantasy}</strong><p>{genreId === "custom" ? "참조 공식 없이 아이디어의 고유한 재미를 살립니다." : `${genre.name} 장르의 패턴은 영감으로만 참고하고, 아이디어가 우선합니다.`}</p></div>
         <button className={styles.cta} onClick={() => callBedrock("story")} disabled={!!loading}>{loading === "story" ? "스토리 빌드 중…" : story ? "스토리 다시 빌드" : "스토리 빌드"}</button>
         {loading === "story" && <div className={styles.jobStatus}><b>● 실제 Bedrock 응답 대기 중</b><span>경과 {elapsed}초</span><small>최대 출력 64K · 결과를 받을 때까지 이 페이지를 유지해주세요.</small></div>}

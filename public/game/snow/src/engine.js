@@ -146,6 +146,7 @@ function spawnPlayers(g, opts) {
       cover: false,
       walls: 0, decoys: 0,
       maxHp: C.player.maxHp, shieldHits: 0,
+      z: 0, vz: 0,             // jump height / vertical velocity
       mods: { throwRange: 1, damage: 1, speed: 1, craftSec: 1 },
       npc: isHuman ? null : { state: 'PATROL', target: null, reactTimer: 0, moveTx: 0, moveTy: 0, wantCraft: false, aimError: 0 },
       diff: g.difficulty,
@@ -164,15 +165,30 @@ export function setHp(g, p, v) {
   return delta;
 }
 export function damage(g, p, amount, byId = null) {
+  // shield item: fully blocks the hit while durability lasts, then breaks.
+  // (zone damage bypasses this — it calls setHp directly)
+  if (p.shieldHits > 0) {
+    p.shieldHits--;
+    g.events.push({ t: g.t, type: 'shieldBlock', id: p.id, left: p.shieldHits });
+    return 0;
+  }
   let eff = p.cover ? amount * C.throw.coverDamageMul : amount;
-  // shield item: reduced damage while charges last
-  if (p.shieldHits > 0) { eff *= C.items.shieldDamageMul; p.shieldHits--; }
   const before = p.hp;
   setHp(g, p, p.hp - eff);
   g.stats.totalDamage += before - p.hp;
   return before - p.hp;
 }
 export function addSnowballs(p, n) { p.snowballs = Math.max(0, p.snowballs + n); return p.snowballs; }
+
+// jump: only from the ground, not while crafting. Airborne players above
+// jumpDodgeZ dodge incoming snowballs (they fly under you).
+export function jump(g, p) {
+  if (!p.alive || p.crafting || p.z > 0.01) return false;
+  p.vz = C.player.jumpVel;
+  p.z = 0.011; // leave the ground immediately so a same-tick double jump is impossible
+  g.events.push({ t: g.t, type: 'jump', id: p.id });
+  return true;
+}
 
 function eliminate(g, p) {
   if (!p.alive) return;
@@ -335,6 +351,12 @@ export function step(g, dt) {
   // players
   for (const p of g.players) {
     if (!p.alive) continue;
+    // jump physics: simple ballistic arc back to the ground
+    if (p.z > 0 || p.vz !== 0) {
+      p.vz -= C.player.gravity * dt;
+      p.z = Math.max(0, p.z + p.vz * dt);
+      if (p.z === 0 && p.vz < 0) p.vz = 0;
+    }
     // crafting countdown
     if (p.crafting) {
       p.craftTimer -= dt;
@@ -383,9 +405,10 @@ export function step(g, dt) {
       if (Math.hypot(d.x - nx, d.y - ny) < 14) { d.alive = false; hitDecoy = true; break; }
     }
     if (hitDecoy) { sb.dead = true; continue; }
-    // player collision
+    // player collision (airborne players above dodge height are missed)
     for (const p of g.players) {
       if (!p.alive || p.id === sb.ownerId) continue;
+      if (p.z > C.player.jumpDodgeZ) continue;
       if (Math.hypot(p.x - nx, p.y - ny) < C.player.radius + C.throw.radius) {
         const dealt = damage(g, p, C.throw.damage * (sb.dmgMul || 1), sb.ownerId);
         if (dealt > 0) { g.stats.hits++; g.kills[sb.ownerId] = (g.kills[sb.ownerId] || 0); }

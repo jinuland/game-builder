@@ -3,10 +3,13 @@
 
 export const CONFIG = {
   map: { size: 1200, snowPiles: 40, pileRadius: 1.5 * 10, pileCooldown: 60, pileRespawnSec: 45 }, // piles respawn elsewhere after depletion
-  player: { maxHp: 100, radius: 12, speed: 150, coverSpeedMul: 0.6 },
+  player: {
+    maxHp: 100, radius: 12, speed: 150, coverSpeedMul: 0.6,
+    jumpVel: 46, gravity: 100, jumpDodgeZ: 5, // jump arc ~10u apex; above dodgeZ snowballs pass under you
+  },
   items: {
     healSpawn: 10, healAmount: 40, healRespawnSec: 50,   // heal packs on the map
-    shieldSpawn: 6, shieldDamageMul: 0.55, shieldHits: 6, shieldRespawnSec: 60, // pick up a shield: takes N hits at reduced damage
+    shieldSpawn: 6, shieldHits: 4, shieldRespawnSec: 60, // shield fully blocks the next N hits (durability), then breaks
     pickupRange: 26,
   },
   craft: { seconds: 3, yield: 10, interactRange: 34 },
@@ -21,7 +24,7 @@ export const CONFIG = {
     firstShrinkSec: 75, intervalSec: 48, dps: 10, finalRadius: 40,
     startRadiusFactor: 0.72, shrinkStep: 0.26,
   },
-  match: { total: 20, npc: 19, warmupSec: 45, engageRange: 170, fleeRange: 130 },
+  match: { total: 20, npc: 19, warmupSec: 45, engageRange: 170, fleeRange: 130, totalOptions: [10, 20, 30, 40] },
   // Low aggro + long reactSec keeps time-to-kill high so ~19 eliminations spread
   // across an 8-12 min match; the closing zone finishes stragglers.
   npcDifficulty: {
