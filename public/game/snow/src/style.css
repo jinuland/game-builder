@@ -100,6 +100,24 @@ html, body { margin: 0; height: 100%; background: var(--navy); color: var(--whit
 /* shield & class HUD tags */
 .sr-shield { font-size: 13px; font-weight: 800; color: #4d9fff; text-shadow: 0 1px 2px #000; }
 .sr-class-tag { font-size: 11px; color: rgba(245,245,245,0.7); text-shadow: 0 1px 2px #000; }
+/* shop & inventory */
+.sr-shoplist { display: flex; flex-direction: column; gap: 8px; max-width: 480px; margin: 12px auto; max-height: 340px; overflow: auto; }
+.sr-shopitem { background: rgba(255,255,255,0.07); border: 1px solid rgba(168,216,234,0.4); border-radius: 10px;
+  padding: 10px 14px; display: flex; justify-content: space-between; align-items: center; gap: 12px; color: var(--white); }
+.sr-shopitem-btn { cursor: pointer; text-align: left; width: 100%; }
+.sr-shopitem-btn:hover { border-color: var(--orange); }
+.sr-shopitem.on { border-color: var(--gold); background: rgba(212,160,23,0.15); }
+.sr-shopinfo { display: flex; flex-direction: column; gap: 3px; }
+.sr-shopinfo b { font-size: 14px; color: var(--ice); }
+.sr-shopinfo b i { color: var(--gold); font-style: normal; font-size: 12px; margin-left: 6px; }
+.sr-shopinfo span { font-size: 12px; color: rgba(245,245,245,0.7); line-height: 1.4; }
+.sr-shopinfo small { font-size: 11px; color: var(--aurora); }
+.sr-shopitem > i { font-style: normal; font-size: 12px; color: var(--gold); white-space: nowrap; }
+.sr-shopitem button:disabled { opacity: 0.4; cursor: default; }
+/* caps + item slot HUD */
+.sr-caps { font-size: 16px; font-weight: 900; color: var(--gold); text-shadow: 0 1px 2px #000; margin-top: 4px; }
+.sr-item-slot { font-size: 13px; font-weight: 700; color: #ffe9a8; text-shadow: 0 1px 2px #000;
+  background: rgba(13,27,42,0.7); border: 1px solid rgba(212,160,23,0.5); border-radius: 6px; padding: 4px 8px; margin-top: 4px; display: inline-block; }
 /* pill buff HUD tags */
 .sr-buff { font-size: 13px; font-weight: 800; color: #ffd43b; text-shadow: 0 1px 2px #000; }
 .sr-buff-mg { color: #ff8f5a; animation: sr-mg-pulse 0.8s ease-in-out infinite; }

@@ -18,6 +18,21 @@ export const CONFIG = {
       mgChance: 0.45, mgAmmo: 75, mgFireInterval: 0.12, mgSpeed: 540, // straight-line rapid fire
     },
   },
+  // bottle caps: battlefield currency. Pick up scattered caps (2-7 random),
+  // dead players drop their wallet where they fell. Spend in the pre-match shop.
+  caps: { spawn: 26, min: 2, max: 7, respawnSec: 40, pickupRange: 26 },
+  // shop items — buy with caps, carry exactly ONE into a match
+  shop: {
+    hardtack: { id: 'hardtack', cost: 10, name: '건빵 패키지', desc: '먹으면 체력 +20, 총 3회 사용', emoji: '🍪', heals: 3, healAmount: 20 },
+    charge: { id: 'charge', cost: 40, name: '돌격 물약', desc: '15초 무적 돌격! 박치기로 적을 20m 날려버림', emoji: '⚗️', durationSec: 15, ramRange: 30, knockback: 800, ramDamage: 24, speedMul: 1.6 }, // knockback 800u/s w/ fast decay ≈ 200u (~20m) total
+    sleepgun: { id: 'sleepgun', cost: 40, name: '수면총', desc: '단 한 발 — 맞은 적은 5초간 잠듦', emoji: '🔫', sleepSec: 5, speed: 620, range: 500 },
+    jetpack: { id: 'jetpack', cost: 60, name: '올드 제트팩', desc: '점프키를 누르는 동안 비행 (연료 60초, 키 3배 높이)', emoji: '🚀', fuelSec: 60, maxHeightMul: 3, riseVel: 55 },
+    grenade: { id: 'grenade', cost: 30, name: '눈 수류탄', desc: '던지면 반경 표시 후 3초 뒤 폭발 (반경 60, 피해 40)', emoji: '💣', fuseSec: 3, radius: 60, damage: 40, throwRange: 260 },
+    club: { id: 'club', cost: 20, name: '몽둥이', desc: '근접 공격(F키)이 강해진다 — 주먹 10 → 몽둥이 26 피해', emoji: '🏏' },
+  },
+  // melee (F key): everyone punches by default; a club hits much harder.
+  // Clubs also drop on the battlefield (fieldSpawn) — grab one mid-match.
+  melee: { range: 36, arcDot: 0.35, cooldownSec: 0.6, fistDamage: 10, clubDamage: 26, clubKnockback: 220, clubFieldSpawn: 4 },
   // spring jump pads (Fortnite-style): step on → launch up + carry your run direction.
   // FIXED layout (fractions of map size): same spots every match, learnable.
   pads: {

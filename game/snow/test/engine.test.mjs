@@ -567,3 +567,154 @@ test('TC-043 high ground: tower blocks ground throws, top-of-tower throws sail o
   for (let i = 0; i < 200 && g.snowballs.length; i++) { step(g, 1 / 60); if (b.hp < hp0) { hit = true; break; } }
   assert.ok(hit, 'throw from high ground reaches the target');
 });
+
+import { tryPickupCaps, equipItem, useItem, chargeActive } from '../src/engine.js';
+
+test('TC-044 caps: spawn, pickup 2-7, death drops wallet, dropped piles never respawn', () => {
+  const g = createGame(1, { total: 2 });
+  assert.equal(g.caps.length, C.caps.spawn);
+  const p = human(g);
+  g.caps = [{ id: 1, x: p.x, y: p.y, amount: 5, takenUntil: 0, dropped: false }];
+  const got = tryPickupCaps(g, p);
+  assert.ok(got >= 2 || got === 5, `got ${got}`);
+  assert.equal(p.caps, got);
+  // death drop
+  const other = g.players[1];
+  other.caps = 12; other.x = 300; other.y = 300;
+  setHp(g, other, 0);
+  const wallet = g.caps.find((c) => c.dropped && c.amount === 12);
+  assert.ok(wallet, 'wallet dropped where they fell');
+  assert.equal(other.caps, 0);
+  // picking up a dropped wallet removes it permanently
+  p.x = wallet.x; p.y = wallet.y;
+  const got2 = tryPickupCaps(g, p);
+  assert.equal(got2, 12);
+  assert.ok(wallet.gone, 'wallet gone forever');
+});
+
+test('TC-045 hardtack: 3 bites of +20, skipped at full hp, item consumed', () => {
+  const g = createGame(1, { total: 2 });
+  const p = human(g);
+  equipItem(g, p, 'hardtack');
+  assert.equal(useItem(g, p), null, 'no bite at full hp');
+  setHp(g, p, 30);
+  useItem(g, p); assert.equal(p.hp, 50);
+  useItem(g, p); assert.equal(p.hp, 70);
+  useItem(g, p); assert.equal(p.hp, 90);
+  assert.equal(p.item, null, '3 bites used up');
+  assert.equal(useItem(g, p), null);
+});
+
+test('TC-046 charge potion: invincible 15s, ram knocks enemies flying ~20m', () => {
+  const g = createGame(1, { total: 2 });
+  const p = human(g), o = g.players[1];
+  o.isNpc = false; o.npc = null; // freeze target AI
+  equipItem(g, p, 'charge');
+  useItem(g, p);
+  assert.ok(chargeActive(g, p), 'charging');
+  assert.equal(damage(g, p, 50), 0, 'invincible while charging');
+  // ram: put target in range
+  p.x = 500; p.y = 500; o.x = 520; o.y = 500; o.hp = 100; o.z = 0;
+  const x0 = o.x;
+  step(g, 0.05);
+  assert.ok(o.hp < 100, 'ram dealt damage');
+  let flew = 0;
+  for (let i = 0; i < 60; i++) { step(g, 1 / 30); flew = Math.max(flew, o.x - x0); }
+  assert.ok(flew > 100, `knocked back ${flew.toFixed(0)}u (~20m)`);
+  // expiry
+  p.chargeUntil = g.t - 1;
+  assert.ok(!chargeActive(g, p));
+});
+
+test('TC-047 sleep gun: one dart, victim sleeps 5s (no move, no AI), no damage', () => {
+  const g = createGame(1, { total: 2 });
+  const p = human(g), o = g.players[1];
+  p.x = 400; p.y = 400; o.x = 520; o.y = 400; o.hp = 100; o.z = 0;
+  g.obstacles = []; g.towers = []; g.walls = [];
+  equipItem(g, p, 'sleepgun');
+  const r = useItem(g, p, 0); // aim east
+  assert.equal(r.used, 'sleepgun');
+  assert.equal(p.item, null, 'single shot');
+  for (let i = 0; i < 60 && g.snowballs.length; i++) step(g, 1 / 60);
+  assert.ok(o.sleepUntil > g.t, 'target asleep');
+  assert.equal(o.hp, 100, 'dart does no damage');
+  const ox = o.x;
+  movePlayer(g, o, 1, 0, 0.5);
+  assert.equal(o.x, ox, 'asleep: cannot move');
+});
+
+test('TC-048 jetpack: hold jump to hover at ~3x player height, fuel drains to zero', () => {
+  const g = createGame(1, { total: 2 });
+  const p = human(g);
+  g.pads = []; g.towers = [];
+  equipItem(g, p, 'jetpack');
+  assert.equal(p.jetFuel, C.shop.jetpack.fuelSec);
+  p.jetHold = true;
+  for (let i = 0; i < 120; i++) step(g, 1 / 30); // 4s of hover
+  const maxH = C.player.radius * 2 * C.shop.jetpack.maxHeightMul;
+  assert.ok(p.z > maxH * 0.9 && p.z <= maxH + 0.1, `hovering at ${p.z.toFixed(1)} (cap ${maxH})`);
+  assert.ok(p.jetFuel < C.shop.jetpack.fuelSec - 3.5, 'fuel draining');
+  p.jetHold = false;
+  for (let i = 0; i < 90; i++) step(g, 1 / 30);
+  assert.equal(p.z, 0, 'released: falls back down');
+  p.jetFuel = 0.01; p.jetHold = true;
+  for (let i = 0; i < 60; i++) step(g, 1 / 30);
+  assert.equal(p.jetFuel, 0, 'fuel empty');
+});
+
+test('TC-049 snow grenade: lands, fuse 3s, area damage with falloff', () => {
+  const g = createGame(1, { total: 3 });
+  const p = human(g), near = g.players[1], far = g.players[2];
+  near.isNpc = false; near.npc = null; far.isNpc = false; far.npc = null;
+  p.x = 400; p.y = 400; p.aim = 0;
+  equipItem(g, p, 'grenade');
+  const r = useItem(g, p, 0);
+  assert.equal(r.used, 'grenade');
+  const gr = g.grenades[0];
+  near.x = gr.lx + 10; near.y = gr.ly; near.hp = 100; near.z = 0; near.cover = false;
+  far.x = gr.lx + 400; far.y = gr.ly; far.hp = 100;
+  // not exploded during fuse
+  for (let i = 0; i < 60; i++) step(g, 1 / 30); // 2s
+  assert.equal(near.hp, 100, 'no damage before fuse');
+  for (let i = 0; i < 70; i++) { step(g, 1 / 30); near.x = gr.lx + 10; near.y = gr.ly; } // hold in blast zone
+  assert.ok(near.hp < 100, `blast hit near target (hp ${near.hp})`);
+  assert.equal(far.hp, 100, 'out of radius untouched');
+});
+
+import { melee } from '../src/engine.js';
+
+test('TC-050 melee: default punch 10, club 26 + knockback, cooldown, facing arc', () => {
+  const g = createGame(1, { total: 2 });
+  const p = human(g), o = g.players[1];
+  o.isNpc = false; o.npc = null; o.cover = false;
+  p.x = 500; p.y = 500; o.x = 525; o.y = 500; o.hp = 100;
+  // facing away -> whiff
+  assert.equal(melee(g, p, Math.PI), null, 'no hit behind');
+  p.meleeCdUntil = 0;
+  // punch
+  const hit = melee(g, p, 0);
+  assert.ok(hit, 'punch lands');
+  assert.equal(o.hp, 100 - C.melee.fistDamage);
+  // cooldown blocks immediate second swing
+  assert.equal(melee(g, p, 0), null, 'on cooldown');
+  // club hits harder + knocks back
+  p.meleeCdUntil = 0; p.hasClub = true; o.hp = 100; o.kbVx = 0;
+  melee(g, p, 0);
+  assert.equal(o.hp, 100 - C.melee.clubDamage, 'club damage');
+  assert.ok(o.kbVx > 0, 'club knockback');
+});
+
+test('TC-051 club pickup upgrades melee; shop club equips as passive', () => {
+  const g = createGame(1, { total: 2 });
+  const p = human(g);
+  g.pickups = [{ id: 1, kind: 'club', x: p.x, y: p.y, takenUntil: 0 }];
+  assert.equal(tryPickup(g, p), 'club');
+  assert.ok(p.hasClub);
+  // field clubs spawn
+  const g2 = createGame(2, { total: 2 });
+  assert.ok(g2.pickups.filter((i) => i.kind === 'club').length === C.melee.clubFieldSpawn);
+  // shop equip
+  const g3 = createGame(3, { total: 2, itemId: 'club' });
+  assert.ok(human(g3).hasClub, 'shop club is passive upgrade');
+  assert.equal(human(g3).item, null, 'no active slot used');
+});

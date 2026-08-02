@@ -118,6 +118,7 @@ function startMatch(room) {
     p.userSkin = true;                       // renderer: distinct user look
     p.uid = m.uid;
     E.applyClass(g, p, m.classId || 'jack');
+    if (m.itemId) E.equipItem(g, p, m.itemId); // carried shop item (client-owned wallet)
     m.playerId = p.id;
     m.ghost = false;
     m.input = { mvx: 0, mvy: 0, aim: 0, cover: false };
@@ -153,6 +154,9 @@ function tickRoom(room, dt) {
     p.aim = inp.aim;
     p.cover = !!inp.cover;
     if (inp.jump) { E.jump(g, p); inp.jump = false; }
+    p.jetHold = !!inp.jetHold;
+    if (inp.melee) { p.aim = inp.aim; E.melee(g, p, inp.aim); inp.melee = false; }
+    if (inp.useItem) { p.aim = inp.aim; E.useItem(g, p, inp.aim); inp.useItem = false; }
     if (inp.craft) { E.startCraft(g, p); inp.craft = false; }
     if (inp.wall) { p.aim = inp.aim; E.buildWall(g, p); inp.wall = false; }
     if (inp.decoy) { p.aim = inp.aim; E.placeDecoy(g, p); inp.decoy = false; }
@@ -163,6 +167,8 @@ function tickRoom(room, dt) {
       E.movePlayer(g, p, inp.mvx, inp.mvy, dt);
     }
     E.tryPickup(g, p);
+    const capsGot = E.tryPickupCaps(g, p);
+    if (capsGot > 0 && m.ws && m.ws.readyState === 1) m.ws.send(JSON.stringify({ type: 'caps_got', amount: capsGot, wallet: p.caps }));
   }
   E.step(g, dt);
   room.tick++;
@@ -191,7 +197,9 @@ function snapshot(room) {
     t: Math.round(g.t * 100) / 100,
     tick: room.tick,
     zone: { r: Math.round(g.zone.radius), next: Math.round(g.zone.nextShrink - g.t) },
-    players: g.players.map((p) => p.alive ? [p.id, Math.round(p.x), Math.round(p.y), Math.round(p.z), Math.round(p.aim * 100) / 100, p.hp, p.snowballs, p.crafting ? 1 : 0, p.shieldHits, p.mg ? p.mg.ammo : 0, p.buff ? p.buff.kind : 0, p.cover ? 1 : 0] : [p.id]),
+    players: g.players.map((p) => p.alive ? [p.id, Math.round(p.x), Math.round(p.y), Math.round(p.z), Math.round(p.aim * 100) / 100, p.hp, p.snowballs, p.crafting ? 1 : 0, p.shieldHits, p.mg ? p.mg.ammo : 0, p.buff ? p.buff.kind : 0, p.cover ? 1 : 0, p.sleepUntil > g.t ? 1 : 0, p.chargeUntil > g.t ? 1 : 0, p.hasClub ? 1 : 0, p.caps || 0, p.item ? p.item.id : 0, p.item ? p.item.usesLeft : 0, Math.round(p.jetFuel || 0)] : [p.id]),
+    caps: g.caps.map((cp) => [cp.id, (cp.gone || cp.takenUntil > g.t) ? 1 : 0, Math.round(cp.x), Math.round(cp.y), cp.amount]),
+    nades: g.grenades.map((gr) => [gr.id, Math.round(gr.x), Math.round(gr.y), Math.round(gr.z || 0), Math.round(gr.lx), Math.round(gr.ly), gr.radius, Math.round((gr.explodeAt - g.t) * 10) / 10, gr.exploded ? 1 : 0]),
     balls: g.snowballs.map((s) => [s.id, Math.round(s.x), Math.round(s.y), s.flat ? 1 : 0, Math.round((s.traveled / (s.range || 1)) * 100)]),
     walls: g.walls.map((w) => [w.id, Math.round(w.x), Math.round(w.y), Math.round(w.angle * 100) / 100, w.hp]),
     decoys: g.decoys.map((d) => [d.id, Math.round(d.x), Math.round(d.y)]),
@@ -279,7 +287,7 @@ wss.on('connection', (ws) => {
       // replace stale connection with same uid
       const old = room.members.get(uid);
       if (old && old.ws && old.ws !== ws && old.ws.readyState === 1) old.ws.close();
-      member = { room, uid, name, classId: msg.classId || 'jack', ready: false, ws, playerId: null, ghost: false, input: { mvx: 0, mvy: 0, aim: 0 } };
+      member = { room, uid, name, classId: msg.classId || 'jack', itemId: msg.itemId && C.shop[msg.itemId] ? msg.itemId : null, ready: false, ws, playerId: null, ghost: false, input: { mvx: 0, mvy: 0, aim: 0 } };
       room.members.set(uid, member);
       if (!room.hostUid) { room.hostUid = uid; room.hostName = name; }
       send({ type: 'joined', code: room.code, isPublic: room.isPublic });
@@ -306,6 +314,9 @@ wss.on('connection', (ws) => {
       if (msg.craft) i.craft = true;
       if (msg.wall) i.wall = true;
       if (msg.decoy) i.decoy = true;
+      if (msg.melee) i.melee = true;
+      if (msg.useItem) i.useItem = true;
+      i.jetHold = !!msg.jetHold;
       if (msg.throwCharge != null) i.throwCharge = clampNum(msg.throwCharge, 0, 1);
       i.mg = !!msg.mg;
       return;

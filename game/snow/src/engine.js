@@ -22,7 +22,9 @@ export function createGame(seed = 42, opts = {}) {
     piles: [],               // {x,y,cooldownUntil}
     obstacles: [],           // static cover: {x,y,r,kind:'rock'|'tree'|'cabin'} — block movement & snowballs
     corpses: [],             // fallen players: {id,x,y,skin,at} — rendered lying down, never removed
-    pickups: [],             // {id,x,y,kind:'heal'|'shield',takenUntil} — respawn after cooldown
+    pickups: [],             // {id,x,y,kind:'heal'|'shield'|'pill',takenUntil} — respawn after cooldown
+    caps: [],                // bottle-cap piles: {id,x,y,amount,takenUntil} (dropped wallets: respawn=never)
+    grenades: [],            // armed snow grenades: {id,ownerId,x,y,z,landAt,explodeAt,radius}
     zone: { cx: C.map.size / 2, cy: C.map.size / 2, radius: C.map.size * C.zone.startRadiusFactor, nextShrink: C.zone.firstShrinkSec, shrinks: 0 },
     events: [],              // telemetry event log
     placementOrder: [],      // ids in order of elimination (last = winner)
@@ -35,7 +37,10 @@ export function createGame(seed = 42, opts = {}) {
   spawnPads(g);
   spawnTowers(g);
   spawnPickups(g);
+  spawnCaps(g);
   spawnPlayers(g, opts);
+  // carried shop item for the human (opts.itemId), engine state per player
+  if (opts.itemId) equipItem(g, humanPlayer(g), opts.itemId);
   applyClass(g, humanPlayer(g), opts.classId);
   return g;
 }
@@ -54,7 +59,131 @@ function spawnPickups(g) {
     g.pickups.push({ id: uid(), kind: 'pill', x: g.rng.range(80, m - 80), y: g.rng.range(80, m - 80), takenUntil: 0, buff: null });
   }
   for (const it of g.pickups) if (it.kind === 'pill') it.buff = rollPillBuff(g);
+  // clubs also lie around the battlefield (rare) — melee upgrade on touch
+  for (let i = 0; i < C.melee.clubFieldSpawn; i++) {
+    g.pickups.push({ id: uid(), kind: 'club', x: g.rng.range(80, m - 80), y: g.rng.range(80, m - 80), takenUntil: 0 });
+  }
 }
+
+// Bottle caps scattered across the battlefield. Each pile holds 2-7 caps.
+function spawnCaps(g) {
+  const m = C.map.size;
+  for (let i = 0; i < C.caps.spawn; i++) {
+    g.caps.push({ id: uid(), x: g.rng.range(70, m - 70), y: g.rng.range(70, m - 70), amount: Math.floor(g.rng.range(C.caps.min, C.caps.max + 1)), takenUntil: 0, dropped: false });
+  }
+}
+
+// Pick up a cap pile within range. Returns amount gained or 0.
+export function tryPickupCaps(g, p) {
+  for (const cp of g.caps) {
+    if (cp.takenUntil > g.t || cp.gone) continue;
+    if (Math.hypot(cp.x - p.x, cp.y - p.y) > C.caps.pickupRange) continue;
+    const got = cp.amount;
+    p.caps = (p.caps || 0) + got;
+    if (cp.dropped) { cp.gone = true; } // dropped wallets don't respawn
+    else {
+      cp.takenUntil = g.t + C.caps.respawnSec;
+      cp.x = g.rng.range(70, C.map.size - 70); cp.y = g.rng.range(70, C.map.size - 70);
+      cp.amount = Math.floor(g.rng.range(C.caps.min, C.caps.max + 1));
+    }
+    g.events.push({ t: g.t, type: 'caps', id: p.id, amount: got });
+    return got;
+  }
+  return 0;
+}
+
+// ---- shop items (carry ONE into the match) ---------------------------------
+export function equipItem(g, p, itemId) {
+  if (!p || !C.shop[itemId]) return false;
+  if (itemId === 'club') { p.hasClub = true; return true; } // passive melee upgrade
+  const def = C.shop[itemId];
+  p.item = { id: itemId, usesLeft: itemId === 'hardtack' ? def.heals : 1 };
+  if (itemId === 'jetpack') p.jetFuel = def.fuelSec;
+  return true;
+}
+
+// Melee (F key): everyone can punch; carrying a club hits harder + knocks back.
+// Hits the nearest alive enemy within range and facing arc. Returns victim or null.
+export function melee(g, p, aim = p.aim) {
+  if (!p.alive || p.crafting || p.sleepUntil > g.t) return null;
+  if (p.meleeCdUntil != null && g.t < p.meleeCdUntil) return null;
+  p.meleeCdUntil = g.t + C.melee.cooldownSec;
+  const fx = Math.cos(aim), fy = Math.sin(aim);
+  let best = null, bd = C.melee.range;
+  for (const o of g.players) {
+    if (!o.alive || o.id === p.id) continue;
+    const dx = o.x - p.x, dy = o.y - p.y;
+    const d = Math.hypot(dx, dy);
+    if (d > C.melee.range) continue;
+    if (d > 0.001 && (dx * fx + dy * fy) / d < C.melee.arcDot) continue; // behind us
+    if (d < bd + 0.001) { bd = d; best = o; }
+  }
+  g.events.push({ t: g.t, type: 'swing', id: p.id, club: !!p.hasClub, hit: !!best });
+  if (!best) return null;
+  const dmg = p.hasClub ? C.melee.clubDamage : C.melee.fistDamage;
+  damage(g, best, dmg, p.id);
+  if (best.crafting) cancelCraft(g, best, 'melee');
+  if (p.hasClub && best.alive) {
+    const a = Math.atan2(best.y - p.y, best.x - p.x);
+    best.kbVx = Math.cos(a) * C.melee.clubKnockback;
+    best.kbVy = Math.sin(a) * C.melee.clubKnockback;
+  }
+  if (!best.alive) { g.kills[p.id] = (g.kills[p.id] || 0) + 1; g.events.push({ t: g.t, type: 'kill', by: p.id, victim: best.id }); }
+  return best;
+}
+
+// Use the carried item. aim used by sleepgun/grenade. Returns event-ish result or null.
+export function useItem(g, p, aim = p.aim) {
+  if (!p.alive || p.crafting || !p.item || p.item.usesLeft <= 0) return null;
+  const def = C.shop[p.item.id];
+  if (p.item.id === 'hardtack') {
+    const max = p.maxHp || C.player.maxHp;
+    if (p.hp >= max) return null; // don't waste a bite at full HP
+    setHp(g, p, Math.min(max, p.hp + def.healAmount));
+    p.item.usesLeft--;
+    g.events.push({ t: g.t, type: 'item', id: p.id, item: 'hardtack', left: p.item.usesLeft });
+    if (p.item.usesLeft <= 0) p.item = null;
+    return { used: 'hardtack' };
+  }
+  if (p.item.id === 'charge') {
+    p.chargeUntil = g.t + def.durationSec; // invincible ram mode
+    p.item.usesLeft = 0; p.item = null;
+    g.events.push({ t: g.t, type: 'item', id: p.id, item: 'charge' });
+    return { used: 'charge' };
+  }
+  if (p.item.id === 'sleepgun') {
+    const sb = {
+      id: uid(), ownerId: p.id, isNpc: p.isNpc,
+      x: p.x, y: p.y, dirX: Math.cos(aim), dirY: Math.sin(aim),
+      traveled: 0, range: def.range, speed: def.speed, dead: false,
+      dmgMul: 0, sleep: def.sleepSec, flat: true, high: p.z >= C.towers.height - 2,
+    };
+    g.snowballs.push(sb);
+    p.item.usesLeft = 0; p.item = null;
+    g.events.push({ t: g.t, type: 'item', id: p.id, item: 'sleepgun' });
+    return { used: 'sleepgun', sb };
+  }
+  if (p.item.id === 'grenade') {
+    const dist = Math.min(def.throwRange, 260);
+    const lx = p.x + Math.cos(aim) * dist, ly = p.y + Math.sin(aim) * dist;
+    const flight = 0.9; // arc time to land
+    g.grenades.push({
+      id: uid(), ownerId: p.id,
+      sx: p.x, sy: p.y, x: p.x, y: p.y, z: EYEZ,
+      lx: Math.max(0, Math.min(C.map.size, lx)), ly: Math.max(0, Math.min(C.map.size, ly)),
+      landAt: g.t + flight, explodeAt: g.t + flight + def.fuseSec,
+      radius: def.radius, damage: def.damage, thrownAt: g.t,
+    });
+    p.item.usesLeft = 0; p.item = null;
+    g.events.push({ t: g.t, type: 'item', id: p.id, item: 'grenade' });
+    return { used: 'grenade' };
+  }
+  // jetpack has no discrete "use" — it binds to the jump key (see jump/step)
+  return null;
+}
+const EYEZ = 14;
+
+export function chargeActive(g, p) { return p.chargeUntil != null && p.chargeUntil > g.t; }
 
 // Spring jump pads: FIXED spots every match (learnable map knowledge),
 // step on one → big vertical launch that carries your run direction.
@@ -160,6 +289,13 @@ export function tryPickup(g, p) {
       g.events.push({ t: g.t, type: 'shield', id: p.id });
       return 'shield';
     }
+    if (it.kind === 'club') {
+      if (p.hasClub) continue;
+      p.hasClub = true;
+      it.takenUntil = g.t + 9e9; // field clubs are one-time grabs
+      g.events.push({ t: g.t, type: 'club', id: p.id });
+      return 'club';
+    }
     if (it.kind === 'pill') {
       const buff = applyPillBuff(g, p, it.buff || rollPillBuff(g));
       it.takenUntil = g.t + C.items.pill.respawnSec;
@@ -229,6 +365,9 @@ function spawnPlayers(g, opts) {
       z: 0, vz: 0,             // height / vertical velocity
       mvx: 0, mvy: 0,          // last move direction (for pad launch carry)
       padVx: 0, padVy: 0,      // airborne carry velocity from a jump pad
+      caps: 0, item: null,     // bottle-cap wallet + carried shop item
+      jetFuel: 0, jetHold: false, sleepUntil: 0, chargeUntil: 0,
+      kbVx: 0, kbVy: 0,        // ram knockback velocity (decays)
       mods: { throwRange: 1, damage: 1, speed: 1, craftSec: 1 },
       npc: isHuman ? null : { state: 'PATROL', target: null, reactTimer: 0, moveTx: 0, moveTy: 0, wantCraft: false, aimError: 0 },
       diff: g.difficulty,
@@ -247,6 +386,8 @@ export function setHp(g, p, v) {
   return delta;
 }
 export function damage(g, p, amount, byId = null) {
+  // charge potion: fully invincible while ramming
+  if (chargeActive(g, p)) return 0;
   // shield item: fully blocks the hit while durability lasts, then breaks.
   // (zone damage bypasses this — it calls setHp directly)
   if (p.shieldHits > 0) {
@@ -265,6 +406,7 @@ export function addSnowballs(p, n) { p.snowballs = Math.max(0, p.snowballs + n);
 // jump: only from the ground, not while crafting. Airborne players above
 // jumpDodgeZ dodge incoming snowballs (they fly under you).
 export function jump(g, p) {
+  if (p.sleepUntil > g.t) return false;
   const groundH = groundHeightAt(g, p.x, p.y);
   if (!p.alive || p.crafting || p.z > groundH + 0.01) return false;
   p.vz = C.player.jumpVel;
@@ -276,6 +418,11 @@ export function jump(g, p) {
 function eliminate(g, p) {
   if (!p.alive) return;
   p.alive = false; p.crafting = false;
+  // drop the wallet where they fell (never respawns; first-come-first-served)
+  if (p.caps > 0) {
+    g.caps.push({ id: uid(), x: p.x, y: p.y, amount: p.caps, takenUntil: 0, dropped: true });
+    p.caps = 0;
+  }
   g.placementOrder.push(p.id);
   // leave a corpse where they fell (rendered lying in the snow)
   g.corpses.push({ id: p.id, x: p.x, y: p.y, skin: p.skin, name: p.name, at: g.t, yaw: p.aim });
@@ -430,17 +577,35 @@ export function step(g, dt) {
     }
   }
   // NPCs pick up items only when deliberately seeking one (or a rare accidental
-  // grab) — otherwise bots hoover up every pill/shield before the player can
+  // grab) — otherwise bots hoover up every pill/shield before the player can.
+  // Caps: bots casually pocket piles they walk over (so wallets accumulate).
   for (const p of g.players) {
     if (!p.alive || !p.isNpc) continue;
     const ai = p.npc;
     const seeking = ai && ai.itemUntil > g.t;
     if (seeking || g.rng() < 0.003) tryPickup(g, p);
+    if (g.rng() < 0.02) tryPickupCaps(g, p);
   }
 
   // players
   for (const p of g.players) {
     if (!p.alive) continue;
+    // jetpack: while the jump key is held and fuel remains, hover (bound to
+    // jump key — no separate control). Max height = 3 player-heights.
+    const groundHJet = groundHeightAt(g, p.x, p.y);
+    if (p.item && p.item.id === 'jetpack' && p.jetHold && p.jetFuel > 0 && p.alive && !p.crafting && p.sleepUntil <= g.t) {
+      const maxH = groundHJet + C.player.radius * 2 * C.shop.jetpack.maxHeightMul; // ~player height×3
+      p.jetFuel = Math.max(0, p.jetFuel - dt);
+      if (p.z < maxH) { p.z = Math.min(maxH, p.z + C.shop.jetpack.riseVel * dt); p.vz = 0; }
+      if (p.jetFuel <= 0) g.events.push({ t: g.t, type: 'jetEmpty', id: p.id });
+    }
+    // ram knockback velocity (from charge headbutt) decays fast
+    if (p.kbVx || p.kbVy) {
+      p.x = Math.max(0, Math.min(C.map.size, p.x + p.kbVx * dt));
+      p.y = Math.max(0, Math.min(C.map.size, p.y + p.kbVy * dt));
+      p.kbVx *= Math.pow(0.02, dt); p.kbVy *= Math.pow(0.02, dt);
+      if (Math.abs(p.kbVx) < 2 && Math.abs(p.kbVy) < 2) { p.kbVx = 0; p.kbVy = 0; }
+    }
     // terrain-aware jump/fall physics: tower tops are elevated ground
     const groundH = groundHeightAt(g, p.x, p.y);
     if (p.z > groundH + 0.001 || p.vz !== 0) {
@@ -495,6 +660,51 @@ export function step(g, dt) {
     // decay walls owned counts recomputed below
   }
 
+  // charge ram: invincible chargers headbutt anyone in front, sending them flying
+  for (const p of g.players) {
+    if (!p.alive || !chargeActive(g, p)) continue;
+    for (const o of g.players) {
+      if (!o.alive || o.id === p.id) continue;
+      if (chargeActive(g, o)) continue;
+      const d = Math.hypot(o.x - p.x, o.y - p.y);
+      if (d > C.shop.charge.ramRange) continue;
+      if (o._lastRamAt != null && g.t - o._lastRamAt < 0.8) continue; // one bonk per 0.8s
+      o._lastRamAt = g.t;
+      const a = Math.atan2(o.y - p.y, o.x - p.x);
+      o.kbVx = Math.cos(a) * C.shop.charge.knockback;
+      o.kbVy = Math.sin(a) * C.shop.charge.knockback;
+      o.vz = 30; o.z = Math.max(o.z, groundHeightAt(g, o.x, o.y) + 0.02); // pop them airborne
+      damage(g, o, C.shop.charge.ramDamage, p.id);
+      if (o.crafting) cancelCraft(g, o, 'ram');
+      if (!o.alive) { g.kills[p.id] = (g.kills[p.id] || 0) + 1; g.events.push({ t: g.t, type: 'kill', by: p.id, victim: o.id }); }
+      g.events.push({ t: g.t, type: 'ram', by: p.id, victim: o.id });
+    }
+  }
+
+  // grenades: arc to landing, show danger ring, explode after fuse
+  for (const gr of g.grenades) {
+    if (gr.exploded) continue;
+    if (g.t < gr.landAt) {
+      const ft = 1 - (gr.landAt - g.t) / 0.9;
+      gr.x = gr.sx + (gr.lx - gr.sx) * ft;
+      gr.y = gr.sy + (gr.ly - gr.sy) * ft;
+      gr.z = 14 + Math.sin(ft * Math.PI) * 40;
+    } else { gr.x = gr.lx; gr.y = gr.ly; gr.z = 0; }
+    if (g.t >= gr.explodeAt) {
+      gr.exploded = true;
+      for (const p of g.players) {
+        if (!p.alive) continue;
+        const d = Math.hypot(p.x - gr.lx, p.y - gr.ly);
+        if (d > gr.radius) continue;
+        const dealt = damage(g, p, gr.damage * (1 - (d / gr.radius) * 0.5), gr.ownerId); // 100%..50% falloff
+        if (p.crafting) cancelCraft(g, p, 'grenade');
+        if (!p.alive && dealt > 0 && gr.ownerId !== p.id) { g.kills[gr.ownerId] = (g.kills[gr.ownerId] || 0) + 1; g.events.push({ t: g.t, type: 'kill', by: gr.ownerId, victim: p.id }); }
+      }
+      g.events.push({ t: g.t, type: 'boom', x: gr.lx, y: gr.ly, r: gr.radius });
+    }
+  }
+  g.grenades = g.grenades.filter((gr) => !gr.exploded || g.t < gr.explodeAt + 0.6);
+
   // snowballs travel + collision
   for (const sb of g.snowballs) {
     if (sb.dead) continue;
@@ -536,6 +746,14 @@ export function step(g, dt) {
       if (!p.alive || p.id === sb.ownerId) continue;
       if (p.z - groundHeightAt(g, p.x, p.y) > C.player.jumpDodgeZ) continue;
       if (Math.hypot(p.x - nx, p.y - ny) < C.player.radius + C.throw.radius) {
+        if (sb.sleep) {
+          // sleep dart: no damage, target naps where they stand
+          p.sleepUntil = g.t + sb.sleep;
+          if (p.crafting) cancelCraft(g, p, 'sleep');
+          g.events.push({ t: g.t, type: 'sleep', by: sb.ownerId, victim: p.id, sec: sb.sleep });
+          sb.dead = true;
+          break;
+        }
         const dealt = damage(g, p, C.throw.damage * (sb.dmgMul || 1), sb.ownerId);
         if (dealt > 0) { g.stats.hits++; g.kills[sb.ownerId] = (g.kills[sb.ownerId] || 0); }
         if (p.crafting) cancelCraft(g, p, 'hit');
@@ -570,9 +788,11 @@ export function step(g, dt) {
 // ---- player movement (called by input/NPC) ------------------------------
 export function movePlayer(g, p, mvx, mvy, dt) {
   if (!p.alive || p.crafting) return;
+  if (p.sleepUntil > g.t) return; // asleep: can't move
   const len0 = Math.hypot(mvx, mvy) || 1;
   p.mvx = mvx / len0; p.mvy = mvy / len0; // remember run direction for pad launches
-  const spd = C.player.speed * ((p.mods && p.mods.speed) || 1) * buffMul(g, p, 'speed') * (p.cover ? C.player.coverSpeedMul : 1) * dt;
+  const chargeMul = chargeActive(g, p) ? C.shop.charge.speedMul : 1;
+  const spd = C.player.speed * ((p.mods && p.mods.speed) || 1) * buffMul(g, p, 'speed') * chargeMul * (p.cover ? C.player.coverSpeedMul : 1) * dt;
   let nx = Math.max(0, Math.min(C.map.size, p.x + p.mvx * spd));
   let ny = Math.max(0, Math.min(C.map.size, p.y + p.mvy * spd));
   // obstacle collision: push out of solid circles (slide along).
@@ -608,6 +828,7 @@ export function movePlayer(g, p, mvx, mvy, dt) {
 // ---- NPC AI state machine ------------------------------------------------
 // PATROL -> SEEK_PILE -> CRAFT -> ATTACK -> RETREAT -> ZONE_MOVE
 export function npcThink(g, p, dt) {
+  if (p.sleepUntil > g.t) { if (p.npc) p.npc.state = 'SLEEP'; return; } // darted: zzz
   const diff = C.npcDifficulty[p.diff] || C.npcDifficulty.normal;
   const ai = p.npc;
   ai.reactTimer -= dt;
@@ -825,7 +1046,7 @@ export function serialize(g) {
     difficulty: g.difficulty,
     players: g.players, snowballs: g.snowballs, walls: g.walls, decoys: g.decoys,
     piles: g.piles, obstacles: g.obstacles, corpses: g.corpses, pickups: g.pickups,
-    pads: g.pads, towers: g.towers,
+    pads: g.pads, towers: g.towers, caps: g.caps, grenades: g.grenades,
     zone: g.zone, placementOrder: g.placementOrder, kills: g.kills,
     _humanId: g._humanId, stats: g.stats,
   });

@@ -310,6 +310,12 @@ export class SnowApp {
       s.add(snowTop);
     }
 
+    // bottle-cap piles: small golden discs stack
+    this.capMeshes = new Map();
+    for (const cp of g.caps) this._makeCapMesh(cp);
+    // grenade meshes + danger rings created on demand
+    this.grenadeMeshes = new Map();
+
     // enemy HP bars: billboard sprites above each actor
     this.hpSprites = new Map();
 
@@ -338,6 +344,23 @@ export class SnowApp {
     }
   }
 
+  // bottle-cap pile: stack of glinting gold discs (bigger pile = more caps)
+  _makeCapMesh(cp) {
+    const grp = new THREE.Group();
+    const capMat = new THREE.MeshStandardMaterial({ color: 0xd4a017, emissive: 0x6b5008, emissiveIntensity: 0.5, metalness: 0.7, roughness: 0.3 });
+    const n = Math.min(4, Math.max(2, Math.round(cp.amount / 2)));
+    for (let i = 0; i < n; i++) {
+      const disc = new THREE.Mesh(new THREE.CylinderGeometry(3, 3, 1, 10), capMat);
+      disc.position.set((i % 2) * 3 - 1.5, 1 + i * 1.1, Math.floor(i / 2) * 3 - 1.5);
+      disc.rotation.y = i * 0.7;
+      grp.add(disc);
+    }
+    grp.position.set(cp.x, 0, cp.y);
+    this.scene3.add(grp);
+    this.capMeshes.set(cp.id, grp);
+    return grp;
+  }
+
   // build (or rebuild, on pill re-roll) one pickup's mesh group
   _makePickupMesh(it) {
     const old = this.pickupMeshes.get(it.id);
@@ -355,6 +378,11 @@ export class SnowApp {
         new THREE.MeshStandardMaterial({ color: 0x4d9fff, emissive: 0x2266cc, emissiveIntensity: 0.7, roughness: 0.3 }),
       );
       disc.position.y = 6; disc.rotation.x = 0.35; grp.add(disc);
+    } else if (it.kind === 'club') { // wooden bat leaning in the snow
+      const wood = new THREE.MeshStandardMaterial({ color: 0x9c6b3f, roughness: 0.85 });
+      const bat = new THREE.Mesh(new THREE.CylinderGeometry(1.4, 2.6, 16, 8), wood);
+      bat.position.y = 8; bat.rotation.z = 0.5; grp.add(bat);
+      grp.userData.pillColor = 0xc98a4b;
     } else { // pill: capsule colored by its buff so you know what you're grabbing
       const pc = PILL_COLORS[it.buff && it.buff.kind] || PILL_COLORS.speed;
       const capMatA = new THREE.MeshStandardMaterial({ color: pc.a, emissive: pc.a, emissiveIntensity: 0.5, roughness: 0.35 });
@@ -464,6 +492,83 @@ export class SnowApp {
     return gp;
   }
 
+  // ---- caps wallet & owned items (persisted per browser) --------------------
+  _wallet() {
+    try { return JSON.parse(localStorage.getItem('snow_wallet') || '{"caps":0,"items":{}}'); }
+    catch { return { caps: 0, items: {} }; }
+  }
+  _saveWallet(w) { try { localStorage.setItem('snow_wallet', JSON.stringify(w)); } catch { /* */ } }
+  _bankCaps(n) { const w = this._wallet(); w.caps += n; this._saveWallet(w); }
+
+  _showShop() {
+    const w = this._wallet();
+    const c = document.createElement('div'); c.className = 'sr-title';
+    const h = document.createElement('h1'); h.textContent = '🏪 병뚜껑 상점'; h.style.fontSize = '38px';
+    c.appendChild(h);
+    c.appendChild(el('p', 'sr-sub', `보유 병뚜껑: 🍾 ${w.caps}개 — 전장에서 병뚜껑을 주워 모으세요`));
+    const box = document.createElement('div'); box.className = 'sr-shoplist';
+    for (const def of Object.values(C.shop)) {
+      const owned = w.items[def.id] || 0;
+      const row = document.createElement('div'); row.className = 'sr-shopitem';
+      const info = document.createElement('div'); info.className = 'sr-shopinfo';
+      info.innerHTML = `<b>${def.emoji} ${def.name} <i>🍾${def.cost}</i></b><span>${def.desc}</span><small>${owned ? `보유 ${owned}개` : ''}</small>`;
+      const buy = document.createElement('button'); buy.className = 'sr-btn'; buy.style.width = 'auto'; buy.style.margin = '0';
+      buy.textContent = '구매';
+      buy.disabled = w.caps < def.cost;
+      buy.addEventListener('click', () => {
+        const w2 = this._wallet();
+        if (w2.caps < def.cost) return;
+        w2.caps -= def.cost; w2.items[def.id] = (w2.items[def.id] || 0) + 1;
+        this._saveWallet(w2);
+        this.audio.craftDone();
+        this._showShop();
+      });
+      row.appendChild(info); row.appendChild(buy);
+      box.appendChild(row);
+    }
+    c.appendChild(box);
+    c.appendChild(this._btn('🎒 인벤토리 (들고 갈 아이템 선택)', () => this._showInventory()));
+    c.appendChild(this._btn('← 타이틀로', () => this._showTitle()));
+    this.overlay.innerHTML = ''; this.overlay.appendChild(c); this.overlay.style.display = 'flex';
+  }
+
+  _showInventory() {
+    const w = this._wallet();
+    this._carryItem = this._carryItem || null;
+    const c = document.createElement('div'); c.className = 'sr-title';
+    const h = document.createElement('h1'); h.textContent = '🎒 인벤토리'; h.style.fontSize = '38px';
+    c.appendChild(h);
+    c.appendChild(el('p', 'sr-sub', '매치에 들고 갈 아이템을 하나만 고르세요 (사용하면 소모)'));
+    const box = document.createElement('div'); box.className = 'sr-shoplist';
+    const ownedIds = Object.keys(w.items).filter((id) => w.items[id] > 0);
+    if (!ownedIds.length) box.appendChild(el('p', 'sr-sub', '보유한 아이템이 없습니다. 상점에서 구매하세요.'));
+    for (const id of ownedIds) {
+      const def = C.shop[id];
+      const row = document.createElement('button');
+      row.className = 'sr-shopitem sr-shopitem-btn' + (this._carryItem === id ? ' on' : '');
+      row.innerHTML = `<div class="sr-shopinfo"><b>${def.emoji} ${def.name} ×${w.items[id]}</b><span>${def.desc}</span></div><i>${this._carryItem === id ? '✅ 장착' : '선택'}</i>`;
+      row.addEventListener('click', () => { this._carryItem = this._carryItem === id ? null : id; this._showInventory(); });
+      box.appendChild(row);
+    }
+    c.appendChild(box);
+    c.appendChild(el('p', 'sr-foot', this._carryItem ? `장착: ${C.shop[this._carryItem].emoji} ${C.shop[this._carryItem].name} — 게임에서 X키로 사용 (제트팩은 점프키 자동)` : '장착된 아이템 없음'));
+    c.appendChild(this._btn('🏪 상점', () => this._showShop()));
+    c.appendChild(this._btn('← 타이틀로', () => this._showTitle()));
+    this.overlay.innerHTML = ''; this.overlay.appendChild(c); this.overlay.style.display = 'flex';
+  }
+
+  // consume one owned item when entering a match with it equipped
+  _consumeCarryItem() {
+    if (!this._carryItem) return null;
+    const w = this._wallet();
+    if (!w.items[this._carryItem] || w.items[this._carryItem] <= 0) { this._carryItem = null; return null; }
+    w.items[this._carryItem]--;
+    this._saveWallet(w);
+    const id = this._carryItem;
+    if (w.items[id] <= 0) this._carryItem = null;
+    return id;
+  }
+
   // render a class's figure to a small PNG for the selection card (cached)
   _classPreview(cls) {
     this._previewCache = this._previewCache || {};
@@ -571,11 +676,13 @@ export class SnowApp {
     } else {
       const start = this._btn('낙하 시작', () => this.newGame(), true); c.appendChild(start);
     }
+    const w = this._wallet();
+    c.appendChild(this._btn(`🏪 상점 · 🍾 ${w.caps} — 🎒 ${this._carryItem ? C.shop[this._carryItem].emoji + ' ' + C.shop[this._carryItem].name : '장착 없음'}`, () => this._showShop()));
     c.appendChild(this._btn('❓ 조작법', () => this._showHelp()));
     const mute = this._btn(this.audio.muted ? '🔇 사운드' : '🔊 사운드', () => { this.audio.setMuted(!this.audio.muted); mute.textContent = this.audio.muted ? '🔇 사운드' : '🔊 사운드'; });
     c.appendChild(mute);
     const foot = document.createElement('p'); foot.className = 'sr-foot';
-    foot.textContent = 'Three.js 3D · 화면 클릭=조준 잠금(ESC 해제) · WASD 이동 · Space 점프 · 마우스 시점 · 좌클릭 홀드 투척 · E 제작 · Q 설벽 · F 미끼 · C 엄폐 · M 지도';
+    foot.textContent = 'WASD 이동 · Space 점프/제트팩 · 좌클릭 투척 · F 근접(주먹/몽둥이) · X 아이템 · E 제작 · Q 설벽 · G 미끼 · C 엄폐 · M 지도';
     c.appendChild(foot);
     this.overlay.innerHTML = ''; this.overlay.appendChild(c); this.overlay.style.display = 'flex';
   }
@@ -594,7 +701,10 @@ export class SnowApp {
       '🌀 스프링 점프 패드 — 밟으면 달리던 방향으로 높이 발사. 돌 타워 위로 올라갈 수 있음',
       '좌클릭 홀드 → 놓기 — 눈뭉치 투척 (오래 누를수록 멀리)',
       'E — 눈더미(반짝이는 흰 둔덕) 앞에서 3초 제작 +10 (무방비!)',
-      'Q — 설벽 건설 (4개) · F — 눈사람 미끼 (5개) · M — 지도',
+      'Q — 설벽 건설 (4개) · G — 눈사람 미끼 (5개) · M — 지도',
+      'F — 근접 공격: 기본 주먹(10). 🏏 몽둥이를 주우면 강타(26+넉백)',
+      '🍾 병뚜껑 — 전장에서 주워 상점에서 아이템 구매 (죽은 자는 지갑을 떨어뜨린다)',
+      'X — 장착한 상점 아이템 사용 (건빵/돌격물약/수면총/수류탄) · 제트팩은 점프키로 비행',
       '파란 빛 기둥 벽 = 눈보라 구역 경계. 벽 밖에 있으면 체력이 닳습니다',
       '쓰러진 플레이어는 그 자리에 남습니다',
     ];
@@ -617,6 +727,12 @@ export class SnowApp {
       .on('match_start', (m) => this._onlineMatchStart(m))
       .on('snap', (m) => this._onlineSnap(m))
       .on('you_died', (m) => this._onlineDied(m))
+      .on('caps_got', (m) => {
+        this._bankCaps(m.amount);
+        this.capsFxUntil = performance.now() + 1600; this.capsFxAmount = m.amount;
+        this.audio.craftDone();
+        this._toast(`🍾 병뚜껑 +${m.amount}! (지갑 ${this._wallet().caps}개)`, 2600);
+      })
       .on('match_over', (m) => this._onlineOver(m))
       .on('stats', (m) => this._renderStats(m.stats))
       .on('_close', () => { if (this.online) { this._toast('서버 연결이 끊어졌습니다'); this.online = false; this._showTitle(); } });
@@ -628,7 +744,7 @@ export class SnowApp {
     setNickname(this._nickname());
     try {
       const net = await this._ensureNet();
-      const base = { name: this._nickname(), classId: this._classId || 'jack' };
+      const base = { name: this._nickname(), classId: this._classId || 'jack', itemId: this._carryItem || undefined };
       if (create) net.send({ type: 'create_room', isPublic, ...base });
       else if (code) net.send({ type: 'join_room', code, ...base });
       else if (quick) net.send({ type: 'quick_join', ...base });
@@ -723,7 +839,9 @@ export class SnowApp {
   newGame(seed = this.seed) {
     this.audio.init(); this.audio.resume();
     const s = seed != null ? seed : (Math.floor(performance.now()) % 100000) + 1;
-    this.game = E.createGame(s, { total: this._total || C.match.total, difficulty: this._difficulty || 'normal', classId: this._classId || 'jack' });
+    const carried = this._consumeCarryItem();
+    this.game = E.createGame(s, { total: this._total || C.match.total, difficulty: this._difficulty || 'normal', classId: this._classId || 'jack', itemId: carried });
+    if (carried) this._toast(`${C.shop[carried].emoji} ${C.shop[carried].name} 장착 — ${carried === 'jetpack' ? '점프키로 비행' : carried === 'club' ? 'F키로 강타' : 'X키로 사용'}`, 4500);
     this.human = E.humanPlayer(this.game);
     this._buildWorld();
     this.online = false;
@@ -752,6 +870,7 @@ export class SnowApp {
     this.audio.init(); this.audio.resume();
     this.online = true;
     this.onlineMeta = m;
+    this._consumeCarryItem(); // hand the carried item to this match
     // identical world from the shared seed; server owns all simulation
     this.game = E.createGame(m.seed, { total: m.total, allNpc: true, humanId: -1, difficulty: 'normal' });
     // mirror names/skins/user flags from the roster
@@ -794,13 +913,19 @@ export class SnowApp {
       const p = g.players.find((x) => x.id === row[0]);
       if (!p) continue;
       if (row.length === 1) { if (p.alive) { p.alive = false; if (!g.placementOrder.includes(p.id)) g.placementOrder.push(p.id); g.corpses.push({ id: p.id, x: p.x, y: p.y, skin: p.skin, name: p.name, at: g.t, yaw: p.aim }); } continue; }
-      const [, x, y, z, aim, hp, balls, crafting, shield, mg, buff, cover] = row;
+      const [, x, y, z, aim, hp, balls, crafting, shield, mg, buff, cover, asleep, charging, hasClub, caps, itemId, itemUses, jetFuel] = row;
       // don't snap our own aim (mouse-owned), but position is server-authoritative
       p.x = x; p.y = y; p.z = z; p.hp = hp; p.snowballs = balls;
       p.crafting = !!crafting; p.shieldHits = shield;
       p.mg = mg > 0 ? { ammo: mg, until: g.t + 99, fireCd: 0 } : null;
       p.buff = buff ? { kind: buff, until: g.t + 99, mul: 1 } : null;
       p.cover = !!cover;
+      p.sleepUntil = asleep ? g.t + 1 : 0;
+      p.chargeUntil = charging ? g.t + 1 : 0;
+      p.hasClub = !!hasClub;
+      p.caps = caps || 0;
+      p.item = itemId ? { id: itemId, usesLeft: itemUses } : null;
+      p.jetFuel = jetFuel || 0;
       if (!this.human || p.id !== this.human.id) p.aim = aim;
     }
     // projectiles: sync by id
@@ -827,6 +952,26 @@ export class SnowApp {
       if (!g.decoys.find((v) => v.id === id)) g.decoys.push({ id, x, y, alive: true, until: g.t + 99 });
     }
     g.decoys = g.decoys.filter((d) => dids.has(d.id));
+    // caps + grenades (server-authoritative lists)
+    if (m.caps) {
+      for (const [id, gone, x, y, amount] of m.caps) {
+        let cp = g.caps.find((v) => v.id === id);
+        if (!cp) { cp = { id, x, y, amount, takenUntil: 0, dropped: true }; g.caps.push(cp); }
+        cp.x = x; cp.y = y; cp.amount = amount;
+        cp.gone = !!gone; cp.takenUntil = gone ? g.t + 99 : 0;
+      }
+    }
+    if (m.nades) {
+      const nids = new Set();
+      for (const [id, x, y, z, lx, ly, radius, left, exploded] of m.nades) {
+        nids.add(id);
+        let gr = g.grenades.find((v) => v.id === id);
+        if (!gr) { gr = { id, sx: x, sy: y }; g.grenades.push(gr); }
+        gr.x = x; gr.y = y; gr.z = z; gr.lx = lx; gr.ly = ly; gr.radius = radius;
+        gr.explodeAt = g.t + left; gr.exploded = !!exploded;
+      }
+      g.grenades = g.grenades.filter((v) => nids.has(v.id));
+    }
     // pickups / piles state
     for (const [id, taken, x, y, buffKind] of m.pickups) {
       const it = g.pickups.find((v) => v.id === id);
@@ -918,19 +1063,29 @@ export class SnowApp {
         } else if (this.online) {
           if (e.code === 'KeyE') this._queuedCraft = true;
           if (e.code === 'KeyQ') this._queuedWall = true;
-          if (e.code === 'KeyF') this._queuedDecoy = true;
-          if (e.code === 'Space') this._queuedJump = true;
+          if (e.code === 'KeyG') this._queuedDecoy = true;
+          if (e.code === 'KeyF') this._queuedMelee = true;
+          if (e.code === 'KeyX') this._queuedUse = true;
+          if (e.code === 'Space') { this._queuedJump = true; this._jetHold = true; }
         } else {
           if (e.code === 'KeyE') this._tryCraft();
           if (e.code === 'KeyQ') this._act('wall');
-          if (e.code === 'KeyF') this._act('decoy');
-          if (e.code === 'Space' && E.jump(this.game, this.human)) this.audio.throw();
+          if (e.code === 'KeyG') this._act('decoy');
+          if (e.code === 'KeyF') this._melee();
+          if (e.code === 'KeyX') this._useItem();
+          if (e.code === 'Space') {
+            this.human.jetHold = true;
+            if (E.jump(this.game, this.human)) this.audio.throw();
+          }
         }
         if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space'].includes(e.code)) e.preventDefault();
       }
       if (e.code === 'KeyM') this._showMinimap = !this._showMinimap;
     });
-    window.addEventListener('keyup', (e) => { this.keys[e.code] = false; });
+    window.addEventListener('keyup', (e) => {
+      this.keys[e.code] = false;
+      if (e.code === 'Space') { if (this.human) this.human.jetHold = false; this._jetHold = false; }
+    });
     window.addEventListener('blur', () => { this.keys = {}; this.mouse.down = false; });
 
     document.addEventListener('pointerlockchange', () => {
@@ -1004,6 +1159,24 @@ export class SnowApp {
     this.human.aim = this.yaw;
     if (kind === 'wall') { if (E.buildWall(this.game, this.human)) this.audio.wall(); else this._toast(`설벽: 눈뭉치 ${C.wall.cost}개 필요 (최대 ${C.wall.maxPerPlayer})`); }
     if (kind === 'decoy') { if (E.placeDecoy(this.game, this.human)) this.audio.decoy(); else this._toast(`미끼: 눈뭉치 ${C.decoy.cost}개 필요 (최대 ${C.decoy.maxPerPlayer})`); }
+  }
+  _melee() {
+    const h = this.human;
+    if (!h.alive || h.crafting) return;
+    const victim = E.melee(this.game, h, this.yaw);
+    this.meleeSwingAt = performance.now();
+    this.audio.throw();
+    if (victim) { this.hitMarkerUntil = performance.now() + 300; this.audio.hit(); }
+  }
+  _useItem() {
+    const h = this.human;
+    if (!h.item) { this._toast('가진 아이템 없음 — 상점에서 구매 후 인벤토리에서 장착'); return; }
+    const r = E.useItem(this.game, h, this.yaw);
+    if (!r) return;
+    if (r.used === 'hardtack') { this.audio.craftDone(); this._toast(`🍪 건빵! +${C.shop.hardtack.healAmount} HP (남은 ${h.item ? h.item.usesLeft : 0}회)`); }
+    if (r.used === 'charge') { this.audio.fanfare(); this._toast(`⚗️ 돌격! ${C.shop.charge.durationSec}초 무적 — 부딪히면 날아간다!`, 4000); }
+    if (r.used === 'sleepgun') { this.audio.throw(); this._toast('🔫 수면탄 발사!'); }
+    if (r.used === 'grenade') { this.audio.throw(); this._toast('💣 수류탄 투척 — 3초 후 폭발!'); }
   }
 
   // ---- per-frame update -------------------------------------------------------
@@ -1079,7 +1252,17 @@ export class SnowApp {
     if (beforeCraft && !h.crafting && h.craftTimer <= 0 && h.alive) this.audio.craftDone();
     // human auto-pickup: walk over heal/shield to grab it
     if (h.alive) {
+      // bottle caps: pick up + celebration flash
+      const capsGot = E.tryPickupCaps(g, h);
+      if (capsGot > 0) {
+        this._bankCaps(capsGot);
+        this.capsFxUntil = performance.now() + 1600;
+        this.capsFxAmount = capsGot;
+        this.audio.craftDone();
+        this._toast(`🍾 병뚜껑 +${capsGot}! (지갑 ${this._wallet().caps}개)`, 2600);
+      }
       const got = E.tryPickup(g, h);
+      if (got === 'club') { this.audio.wall(); this._toast('🏏 몽둥이 획득! F키 근접 공격이 강해졌다 (26 피해 + 넉백)', 4000); }
       if (got === 'heal') { this.audio.craftDone(); this._toast(`💊 힐팩 +${C.items.healAmount} HP`); }
       if (got === 'shield') { this.audio.wall(); this._toast(`🛡 방패 획득 — 다음 ${C.items.shieldHits}회 피격 완전 방어 (내구도 ${C.items.shieldHits})`); }
       if (got && got.kind === 'pill') {
@@ -1148,10 +1331,14 @@ export class SnowApp {
       craft: this._queuedCraft || undefined,
       wall: this._queuedWall || undefined,
       decoy: this._queuedDecoy || undefined,
+      melee: this._queuedMelee || undefined,
+      useItem: this._queuedUse || undefined,
+      jetHold: this._jetHold || undefined,
       throwCharge: this._queuedThrow != null ? this._queuedThrow : undefined,
       mg: !!(mgActive && this.mouse.down && this.locked),
     });
-    this._queuedJump = this._queuedCraft = this._queuedWall = this._queuedDecoy = false;
+    if (this._queuedMelee) { this.meleeSwingAt = performance.now(); this.audio.throw(); }
+    this._queuedJump = this._queuedCraft = this._queuedWall = this._queuedDecoy = this._queuedMelee = this._queuedUse = false;
     this._queuedThrow = null;
     // local hit feedback from hp deltas
     if (this._lastHp != null && h.hp < this._lastHp) { this.audio.hit(); this.damageFlashUntil = performance.now() + 250; }
@@ -1192,6 +1379,20 @@ export class SnowApp {
       if (ud.legL) { ud.legL.rotation.x = swing; ud.legR.rotation.x = -swing; }
       if (p.crafting) { ud.armL.rotation.x = -1.2; ud.armR.rotation.x = -1.2; }
       else { ud.armL.rotation.x = swing * 0.5; ud.armR.rotation.x = -swing * 0.5; }
+      // sleep: figure tips sideways + slow spin nap
+      if (p.sleepUntil > g.t) {
+        fig.rotation.z = Math.PI / 2 * 0.85;
+        fig.position.y = 3;
+      } else if (fig.rotation.z !== 0 && !(p.kbVx || p.kbVy)) fig.rotation.z = 0;
+      // charge potion: figure glows red-orange while ramming
+      if (E.chargeActive(g, p) && !ud.chargeGlow) {
+        const glow = new THREE.Mesh(
+          new THREE.SphereGeometry(CHAR_SCALE * 1.5, 14, 10),
+          new THREE.MeshBasicMaterial({ color: 0xff5030, transparent: true, opacity: 0.28, blending: THREE.AdditiveBlending, depthWrite: false }),
+        );
+        glow.position.y = CHAR_SCALE * 1.2; fig.add(glow); ud.chargeGlow = glow;
+      }
+      if (ud.chargeGlow) ud.chargeGlow.visible = E.chargeActive(g, p);
       // shield bubble: translucent blue sphere while durability remains
       if (p.shieldHits > 0 && !ud.shield) {
         const bub = new THREE.Mesh(
@@ -1342,6 +1543,47 @@ export class SnowApp {
           m.position.set(it.x, Math.sin(now / 400 + it.id) * 1.6, it.y);
           m.rotation.y = now / 800;
         }
+      }
+    }
+    // bottle caps: show/hide + new dropped wallets
+    if (this.capMeshes) {
+      for (const cp of g.caps) {
+        let m = this.capMeshes.get(cp.id);
+        if (!m && !cp.gone) m = this._makeCapMesh(cp);
+        if (!m) continue;
+        m.visible = !cp.gone && cp.takenUntil <= g.t;
+        if (m.visible) { m.position.set(cp.x, Math.sin(now / 350 + cp.id) * 0.8, cp.y); m.rotation.y = now / 1200; }
+      }
+    }
+    // grenades: flying ball + pulsing danger ring after landing
+    if (this.grenadeMeshes) {
+      const gseen = new Set();
+      for (const gr of g.grenades) {
+        gseen.add(gr.id);
+        let m = this.grenadeMeshes.get(gr.id);
+        if (!m) {
+          m = new THREE.Group();
+          const ball = new THREE.Mesh(new THREE.SphereGeometry(5, 12, 10), new THREE.MeshStandardMaterial({ color: 0xf0f6fa, roughness: 0.5, emissive: 0x8899aa, emissiveIntensity: 0.3 }));
+          m.add(ball);
+          const ring = new THREE.Mesh(
+            new THREE.RingGeometry(gr.radius - 3, gr.radius, 40),
+            new THREE.MeshBasicMaterial({ color: 0xff4444, transparent: true, opacity: 0.4, side: THREE.DoubleSide, depthWrite: false }),
+          );
+          ring.rotation.x = -Math.PI / 2; ring.position.y = 0.8;
+          m.userData.ring = ring; m.userData.ball = ball;
+          this.scene3.add(ring); this.scene3.add(m);
+          this.grenadeMeshes.set(gr.id, m);
+        }
+        m.position.set(gr.x, (gr.z || 0) + 4, gr.y);
+        const ring = m.userData.ring;
+        ring.position.set(gr.lx, 0.8, gr.ly);
+        ring.visible = true;
+        const left = gr.explodeAt - g.t;
+        ring.material.opacity = 0.25 + Math.abs(Math.sin(now / (left < 1 ? 60 : 160))) * 0.4; // faster pulse near boom
+        if (gr.exploded) { m.userData.ball.visible = false; ring.material.opacity = 0.9; ring.scale.setScalar(1 + (g.t - gr.explodeAt) * 2); }
+      }
+      for (const [id, m] of this.grenadeMeshes) {
+        if (!gseen.has(id)) { this.scene3.remove(m); this.scene3.remove(m.userData.ring); this.grenadeMeshes.delete(id); }
       }
     }
     // jump pad plates pulse
@@ -1521,6 +1763,35 @@ export class SnowApp {
       ctx.fillStyle = gEdge; ctx.fillRect(0, 0, this.vw, this.vh);
     }
 
+    // caps pickup celebration: golden burst + big +N
+    if (now < (this.capsFxUntil || 0)) {
+      const t = 1 - (this.capsFxUntil - now) / 1600;
+      const cx = this.vw / 2, cy = this.vh * 0.34;
+      ctx.save();
+      ctx.globalAlpha = 1 - t;
+      for (let i = 0; i < 10; i++) {
+        const a = (i / 10) * Math.PI * 2 + t * 2;
+        const r = 20 + t * 70;
+        ctx.fillStyle = i % 2 ? '#FFD43B' : '#D4A017';
+        ctx.beginPath(); ctx.arc(cx + Math.cos(a) * r, cy + Math.sin(a) * r * 0.6, 4 - t * 2, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.fillStyle = '#FFD43B'; ctx.font = `bold ${Math.round(30 - t * 8)}px system-ui`; ctx.textAlign = 'center';
+      ctx.shadowColor = '#000'; ctx.shadowBlur = 6;
+      ctx.fillText(`🍾 +${this.capsFxAmount}`, cx, cy - 20 - t * 26);
+      ctx.restore();
+    }
+    // melee swing arc flash
+    if (this.meleeSwingAt && now - this.meleeSwingAt < 180) {
+      const t = (now - this.meleeSwingAt) / 180;
+      ctx.save();
+      ctx.globalAlpha = 0.7 * (1 - t);
+      ctx.strokeStyle = this.human.hasClub ? '#c98a4b' : '#ffffff';
+      ctx.lineWidth = 7 - t * 4;
+      ctx.beginPath();
+      ctx.arc(this.vw / 2, this.vh / 2, 60 + t * 80, -0.9 + t * 1.4, 0.2 + t * 1.4);
+      ctx.stroke();
+      ctx.restore();
+    }
     this._renderViewModel(ctx, now);
     this._renderCrosshair(ctx, now);
 
@@ -1655,7 +1926,16 @@ export class SnowApp {
     const br = el('div', 'sr-hud-br');
     br.appendChild(el('div', 'sr-ammo-big', `${h.snowballs}`));
     br.appendChild(el('div', 'sr-ammo-cap', '❄ SNOWBALLS'));
-    br.appendChild(el('div', 'sr-tac', `Q 설벽 ${h.walls}/${C.wall.maxPerPlayer} · F 미끼 ${h.decoys}/${C.decoy.maxPerPlayer}`));
+    br.appendChild(el('div', 'sr-tac', `Q 설벽 ${h.walls}/${C.wall.maxPerPlayer} · G 미끼 ${h.decoys}/${C.decoy.maxPerPlayer} · F ${h.hasClub ? '🏏 몽둥이' : '👊 주먹'}`));
+    br.appendChild(el('div', 'sr-caps', `🍾 ${h.caps || 0}`));
+    if (h.item) {
+      const def = C.shop[h.item.id];
+      const label = h.item.id === 'jetpack'
+        ? `${def.emoji} 연료 ${Math.ceil(h.jetFuel)}s (점프키)`
+        : `${def.emoji} ${def.name}${h.item.id === 'hardtack' ? ` ${h.item.usesLeft}회` : ''} — X키`;
+      br.appendChild(el('div', 'sr-item-slot', label));
+    }
+    if (E.chargeActive(g, h)) br.appendChild(el('div', 'sr-buff sr-buff-mg', `⚗️ 돌격 무적 ${Math.ceil(h.chargeUntil - g.t)}초`));
     this.hud.appendChild(br);
 
     const feedNow = performance.now();
