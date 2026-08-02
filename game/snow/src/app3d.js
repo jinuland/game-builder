@@ -7,6 +7,7 @@ import * as THREE from 'three';
 import * as E from './engine.js';
 import { AudioEngine } from './audio.js';
 import { CONFIG as C, SKINS, CLASSES, actForSurvivors } from './config.js';
+import { NetClient, getNickname, setNickname } from './net.js';
 
 const SAVE_KEY = 'snow_royale_save_v1';
 const EYE = 17;               // camera eye height (world units; 1200u map)
@@ -329,7 +330,8 @@ export class SnowApp {
     this.actors.clear(); this.corpseSet.clear(); this.sbMeshes.clear(); this.wallMeshes.clear(); this.decoyMeshes.clear();
     for (const p of g.players) {
       if (p.id === g._humanId) continue;
-      const fig = this._makeFigure(p.skin, p.isNpc);
+      if (this.online && this.human && p.id === this.human.id) continue; // don't render self
+      const fig = this._makeFigure(p.skin, p.isNpc, !!p.userSkin);
       fig.position.set(p.x, 0, p.y);
       s.add(fig);
       this.actors.set(p.id, fig);
@@ -397,10 +399,10 @@ export class SnowApp {
     const { cv, tex } = s.userData;
     const x = cv.getContext('2d');
     x.clearRect(0, 0, cv.width, cv.height);
-    // name
+    // name — real players get a bright orange tag so they pop vs bots
     x.font = 'bold 10px system-ui'; x.textAlign = 'center';
-    x.fillStyle = p.isNpc ? '#d7dde3' : '#ffffff';
-    x.fillText(p.name.slice(0, 14), cv.width / 2, 9);
+    x.fillStyle = p.userSkin ? '#FFB020' : (p.isNpc ? '#d7dde3' : '#ffffff');
+    x.fillText((p.userSkin ? '★ ' : '') + p.name.slice(0, 14), cv.width / 2, 9);
     // bar
     const bw = 84, bh = 7, bx = (cv.width - bw) / 2, by = 13;
     x.fillStyle = 'rgba(0,0,0,0.65)'; x.fillRect(bx, by, bw, bh);
@@ -416,11 +418,23 @@ export class SnowApp {
     s.userData.lastHp = p.hp; s.userData.lastShield = p.shieldHits;
   }
 
-  // low-poly humanoid from primitives (open-source procedural, no downloads)
-  _makeFigure(skin, isNpc) {
+  // low-poly humanoid from primitives (open-source procedural, no downloads).
+  // isUser: real people get a distinct look — golden beanie + bright scarf,
+  // so they're instantly tellable from grey-visored bots.
+  _makeFigure(skin, isNpc, isUser = false) {
     const pal = PALETTES[skin] || PALETTES.bot;
     const gp = new THREE.Group();
     const S = CHAR_SCALE;
+    if (isUser) {
+      const scarf = new THREE.Mesh(new THREE.BoxGeometry(S * 0.5, S * 0.16, S * 0.48), new THREE.MeshStandardMaterial({ color: 0xff6b35, roughness: 0.8 }));
+      scarf.position.y = S * 1.72; gp.add(scarf);
+      const tail = new THREE.Mesh(new THREE.BoxGeometry(S * 0.14, S * 0.5, S * 0.1), new THREE.MeshStandardMaterial({ color: 0xff6b35, roughness: 0.8 }));
+      tail.position.set(S * 0.2, S * 1.45, -S * 0.26); gp.add(tail);
+      const beanie = new THREE.Mesh(new THREE.SphereGeometry(S * 0.26, 10, 8, 0, Math.PI * 2, 0, Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0xffd43b, roughness: 0.9 }));
+      beanie.position.y = S * 2.12; gp.add(beanie);
+      const pom = new THREE.Mesh(new THREE.SphereGeometry(S * 0.09, 8, 6), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1 }));
+      pom.position.y = S * 2.3; gp.add(pom);
+    }
     const mat = (c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.9, flatShading: true });
     // legs
     const legGeo = new THREE.BoxGeometry(S * 0.28, S * 0.8, S * 0.3);
@@ -450,6 +464,30 @@ export class SnowApp {
     return gp;
   }
 
+  // render a class's figure to a small PNG for the selection card (cached)
+  _classPreview(cls) {
+    this._previewCache = this._previewCache || {};
+    if (this._previewCache[cls.id]) return this._previewCache[cls.id];
+    const w = 96, h = 116;
+    const scene = new THREE.Scene();
+    scene.background = null;
+    scene.add(new THREE.HemisphereLight(0xffffff, 0xbfd4e6, 1.15));
+    const sun = new THREE.DirectionalLight(0xfff3e0, 1.1); sun.position.set(-40, 60, 80); scene.add(sun);
+    const fig = this._makeFigure(cls.skin, false, true);
+    fig.rotation.y = 0.6;
+    scene.add(fig);
+    const cam = new THREE.PerspectiveCamera(38, w / h, 1, 500);
+    cam.position.set(0, CHAR_SCALE * 1.5, CHAR_SCALE * 4.6);
+    cam.lookAt(0, CHAR_SCALE * 1.15, 0);
+    const rt = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    rt.setSize(w, h);
+    rt.render(scene, cam);
+    const url = rt.domElement.toDataURL('image/png');
+    rt.dispose();
+    this._previewCache[cls.id] = url;
+    return url;
+  }
+
   // ---- scenes (DOM overlays reused) -----------------------------------------
   _showTitle() {
     this.sceneName = 'title'; this.hud.style.display = 'none';
@@ -458,6 +496,25 @@ export class SnowApp {
     const h = document.createElement('h1'); h.textContent = '스노우 로얄';
     const sub = document.createElement('p'); sub.className = 'sr-sub'; sub.textContent = 'Snow Royale — 3D 1인칭 눈싸움 배틀로얄';
     c.appendChild(h); c.appendChild(sub);
+    // nickname (shown to other players online)
+    const nickRow = document.createElement('div'); nickRow.className = 'sr-nickrow';
+    const nickLabel = document.createElement('span'); nickLabel.textContent = '닉네임';
+    const nick = document.createElement('input');
+    nick.className = 'sr-nick'; nick.maxLength = 12; nick.placeholder = '눈사람';
+    nick.value = getNickname();
+    nick.addEventListener('change', () => setNickname(nick.value.trim()));
+    nickRow.appendChild(nickLabel); nickRow.appendChild(nick);
+    c.appendChild(nickRow);
+    this._nickInput = nick;
+    // mode: solo vs online
+    this._mode = this._mode || 'solo';
+    const modeRow = document.createElement('div'); modeRow.className = 'sr-diffrow';
+    for (const [k, label] of [['solo', '🏔 1인 플레이 (봇 19)'], ['online', '🌐 온라인 플레이']]) {
+      const b = document.createElement('button'); b.className = 'sr-diff' + (this._mode === k ? ' on' : ''); b.textContent = label;
+      b.addEventListener('click', () => { this._mode = k; this._showTitle(); });
+      modeRow.appendChild(b);
+    }
+    c.appendChild(modeRow);
     const diffRow = document.createElement('div'); diffRow.className = 'sr-diffrow';
     this._difficulty = this._difficulty || 'normal';
     for (const [k, label] of [['easy', '쉬움'], ['normal', '보통'], ['hard', '어려움']]) {
@@ -483,9 +540,14 @@ export class SnowApp {
     for (const cls of Object.values(CLASSES)) {
       const b = document.createElement('button');
       b.className = 'sr-class' + (this._classId === cls.id ? ' on' : '');
+      const img = document.createElement('img');
+      img.className = 'sr-class-img'; img.alt = cls.name;
+      try { img.src = this._classPreview(cls); } catch { /* preview optional */ }
+      const txt = document.createElement('div'); txt.className = 'sr-class-txt';
       const nm = document.createElement('b'); nm.textContent = cls.name;
       const ds = document.createElement('span'); ds.textContent = cls.desc;
-      b.appendChild(nm); b.appendChild(ds);
+      txt.appendChild(nm); txt.appendChild(ds);
+      b.appendChild(img); b.appendChild(txt);
       b.addEventListener('click', () => { this._classId = cls.id; this._showTitle(); });
       clsRow.appendChild(b);
     }
@@ -494,7 +556,21 @@ export class SnowApp {
     this.invertY = this.invertY ?? false;
     const inv = this._btn(this.invertY ? '↕ 마우스 상하 반전: 켜짐' : '↕ 마우스 상하 반전: 꺼짐', () => { this.invertY = !this.invertY; this._showTitle(); });
     c.appendChild(inv);
-    const start = this._btn('낙하 시작', () => this.newGame(), true); c.appendChild(start);
+    if (this._mode === 'online') {
+      c.appendChild(this._btn('🌐 공개 방 목록 / 빠른 입장', () => this._showOnlineLobby(), true));
+      const codeRow = document.createElement('div'); codeRow.className = 'sr-nickrow';
+      const codeIn = document.createElement('input'); codeIn.className = 'sr-nick'; codeIn.maxLength = 4;
+      codeIn.placeholder = '방 코드 (예: 4F2K)'; codeIn.style.textTransform = 'uppercase';
+      const joinB = document.createElement('button'); joinB.className = 'sr-btn'; joinB.style.width = 'auto'; joinB.style.margin = '0'; joinB.textContent = '코드로 입장';
+      joinB.addEventListener('click', () => { if (codeIn.value.trim().length === 4) this._joinOnline({ code: codeIn.value.trim().toUpperCase() }); });
+      codeRow.appendChild(codeIn); codeRow.appendChild(joinB);
+      c.appendChild(codeRow);
+      c.appendChild(this._btn('🏠 방 만들기 (공개)', () => this._joinOnline({ create: true, isPublic: true })));
+      c.appendChild(this._btn('🔒 방 만들기 (비공개 · 코드 공유)', () => this._joinOnline({ create: true, isPublic: false })));
+      c.appendChild(this._btn('📊 내 전적', () => this._showStats()));
+    } else {
+      const start = this._btn('낙하 시작', () => this.newGame(), true); c.appendChild(start);
+    }
     c.appendChild(this._btn('❓ 조작법', () => this._showHelp()));
     const mute = this._btn(this.audio.muted ? '🔇 사운드' : '🔊 사운드', () => { this.audio.setMuted(!this.audio.muted); mute.textContent = this.audio.muted ? '🔇 사운드' : '🔊 사운드'; });
     c.appendChild(mute);
@@ -527,12 +603,133 @@ export class SnowApp {
     ov.appendChild(box); this.root.appendChild(ov);
   }
 
+  // ---- online: lobby & rooms --------------------------------------------------
+  _nickname() { return (this._nickInput && this._nickInput.value.trim()) || getNickname() || '눈사람'; }
+
+  async _ensureNet() {
+    if (this.net && this.net.connected) return this.net;
+    this.net = new NetClient();
+    this.net
+      .on('lobby', (m) => this._renderRoomLobby(m))
+      .on('rooms', (m) => this._renderRoomList(m.rooms))
+      .on('error', (m) => this._toast(`⚠ ${m.error}`))
+      .on('you', (m) => { this.onlineYouId = m.playerId; })
+      .on('match_start', (m) => this._onlineMatchStart(m))
+      .on('snap', (m) => this._onlineSnap(m))
+      .on('you_died', (m) => this._onlineDied(m))
+      .on('match_over', (m) => this._onlineOver(m))
+      .on('stats', (m) => this._renderStats(m.stats))
+      .on('_close', () => { if (this.online) { this._toast('서버 연결이 끊어졌습니다'); this.online = false; this._showTitle(); } });
+    await this.net.connect();
+    return this.net;
+  }
+
+  async _joinOnline({ create = false, isPublic = true, code = null, quick = false } = {}) {
+    setNickname(this._nickname());
+    try {
+      const net = await this._ensureNet();
+      const base = { name: this._nickname(), classId: this._classId || 'jack' };
+      if (create) net.send({ type: 'create_room', isPublic, ...base });
+      else if (code) net.send({ type: 'join_room', code, ...base });
+      else if (quick) net.send({ type: 'quick_join', ...base });
+    } catch (e) {
+      this._toast(`⚠ ${e.message} — 서버가 꺼져 있으면 1인 플레이를 이용하세요`, 4200);
+    }
+  }
+
+  async _showOnlineLobby() {
+    setNickname(this._nickname());
+    try {
+      const net = await this._ensureNet();
+      net.send({ type: 'list_rooms' });
+      this._renderRoomList(null); // loading state
+    } catch (e) {
+      this._toast(`⚠ ${e.message}`, 4200);
+    }
+  }
+
+  _renderRoomList(list) {
+    const c = document.createElement('div'); c.className = 'sr-title';
+    const h = document.createElement('h1'); h.textContent = '공개 방'; h.style.fontSize = '40px';
+    c.appendChild(h);
+    if (list == null) { c.appendChild(el('p', 'sr-sub', '목록을 불러오는 중…')); }
+    else if (!list.length) { c.appendChild(el('p', 'sr-sub', '대기 중인 공개 방이 없습니다. 새로 만들어보세요!')); }
+    else {
+      const box = document.createElement('div'); box.className = 'sr-roomlist';
+      for (const r of list) {
+        const b = document.createElement('button'); b.className = 'sr-room';
+        b.innerHTML = `<b>${r.code}</b><span>${r.host}님의 방 · ${r.players}/${r.max}명</span>`;
+        b.addEventListener('click', () => this._joinOnline({ code: r.code }));
+        box.appendChild(b);
+      }
+      c.appendChild(box);
+    }
+    c.appendChild(this._btn('⚡ 빠른 입장 (자동 매칭)', () => this._joinOnline({ quick: true }), true));
+    c.appendChild(this._btn('🔄 새로고침', () => { this.net && this.net.send({ type: 'list_rooms' }); }));
+    c.appendChild(this._btn('← 타이틀로', () => this._showTitle()));
+    this.overlay.innerHTML = ''; this.overlay.appendChild(c); this.overlay.style.display = 'flex';
+  }
+
+  _renderRoomLobby(m) {
+    if (this.sceneName === 'play') return; // lobby updates during play = rematch prep
+    this.roomCode = m.code;
+    const c = document.createElement('div'); c.className = 'sr-title';
+    const h = document.createElement('h1'); h.textContent = `방 ${m.code}`; h.style.fontSize = '40px';
+    c.appendChild(h);
+    c.appendChild(el('p', 'sr-sub', m.isPublic ? '공개 방 — 목록에 노출됩니다' : `비공개 방 — 친구에게 코드 ${m.code}를 알려주세요`));
+    const box = document.createElement('div'); box.className = 'sr-roomlist';
+    for (const mem of m.members) {
+      const row = document.createElement('div'); row.className = 'sr-room sr-room-static';
+      const cls = CLASSES[mem.classId] || CLASSES.jack;
+      row.innerHTML = `<b>${mem.name}${mem.uid === this.net.uid ? ' (나)' : ''}${mem.uid === m.hostUid ? ' 👑' : ''}</b><span>${cls.name} · ${mem.ready ? '✅ 준비됨' : '대기 중'}</span>`;
+      box.appendChild(row);
+    }
+    c.appendChild(box);
+    c.appendChild(el('p', 'sr-foot', `남는 자리는 봇이 채웁니다 (총 ${C.match.total}인 매치)`));
+    const me = m.members.find((x) => x.uid === this.net.uid);
+    const readyB = this._btn(me && me.ready ? '준비 취소' : '✅ 준비', () => this.net.send({ type: 'ready', ready: !(me && me.ready) }));
+    c.appendChild(readyB);
+    if (m.hostUid === this.net.uid) c.appendChild(this._btn('🚀 게임 시작 (방장)', () => this.net.send({ type: 'start' }), true));
+    c.appendChild(this._btn('나가기', () => { this.net.send({ type: 'leave' }); this._showTitle(); }));
+    this.overlay.innerHTML = ''; this.overlay.appendChild(c); this.overlay.style.display = 'flex';
+  }
+
+  async _showStats() {
+    try {
+      const net = await this._ensureNet();
+      net.send({ type: 'stats' });
+    } catch (e) { this._toast(`⚠ ${e.message}`); }
+  }
+
+  _renderStats(s) {
+    const c = document.createElement('div'); c.className = 'sr-title';
+    const h = document.createElement('h1'); h.textContent = '내 전적'; h.style.fontSize = '40px';
+    c.appendChild(h);
+    if (!s || !s.matches) c.appendChild(el('p', 'sr-sub', '아직 온라인 전적이 없습니다. 첫 매치를 뛰어보세요!'));
+    else {
+      const stat = document.createElement('div'); stat.className = 'sr-rstats';
+      stat.appendChild(this._stat('매치', s.matches));
+      stat.appendChild(this._stat('승리', s.wins || 0));
+      stat.appendChild(this._stat('TOP3', s.top3 || 0));
+      stat.appendChild(this._stat('처치', s.kills || 0));
+      stat.appendChild(this._stat('평균 순위', s.matches ? (s.totalPlace / s.matches).toFixed(1) : '-'));
+      c.appendChild(stat);
+      c.appendChild(el('p', 'sr-sub', `${s.name || ''} · 마지막 플레이 ${s.lastPlayedAt ? s.lastPlayedAt.slice(0, 10) : '-'}`));
+    }
+    c.appendChild(this._btn('← 타이틀로', () => this._showTitle()));
+    this.overlay.innerHTML = ''; this.overlay.appendChild(c); this.overlay.style.display = 'flex';
+  }
+
   newGame(seed = this.seed) {
     this.audio.init(); this.audio.resume();
     const s = seed != null ? seed : (Math.floor(performance.now()) % 100000) + 1;
     this.game = E.createGame(s, { total: this._total || C.match.total, difficulty: this._difficulty || 'normal', classId: this._classId || 'jack' });
     this.human = E.humanPlayer(this.game);
     this._buildWorld();
+    this.online = false;
+    this.ghost = false;
+    this.ghostPos = null;
+    if (this.human) this.human.name = this._nickname ? this._nickname() : this.human.name;
     this.sceneName = 'drop';
     this.dropT = 0;
     this.dropTarget = { x: this.game.zone.cx + this.game.rng.range(-300, 300), y: this.game.zone.cy + this.game.rng.range(-300, 300) };
@@ -548,6 +745,132 @@ export class SnowApp {
     this.hud.style.display = 'block';
     this._lastSurvivors = C.match.total;
     this._toast('지도를 클릭해 낙하 지점을 고르세요');
+  }
+
+  // ---- online match: seed-built world + server snapshots ----------------------
+  _onlineMatchStart(m) {
+    this.audio.init(); this.audio.resume();
+    this.online = true;
+    this.onlineMeta = m;
+    // identical world from the shared seed; server owns all simulation
+    this.game = E.createGame(m.seed, { total: m.total, allNpc: true, humanId: -1, difficulty: 'normal' });
+    // mirror names/skins/user flags from the roster
+    for (const rp of m.players) {
+      const p = this.game.players.find((x) => x.id === rp.id);
+      if (p) { p.name = rp.name; p.isNpc = rp.isNpc; p.userSkin = rp.userSkin; if (rp.classId) E.applyClass(this.game, p, rp.classId); }
+    }
+    this.human = null; // assigned when 'you' arrives (may already be set)
+    this._applyYou();
+    this._buildWorld();
+    this.sceneName = 'play';
+    this.ghost = false;
+    this.killFeed = [];
+    this.overlay.style.display = 'none'; this.overlay.innerHTML = '';
+    this.hud.style.display = 'block';
+    this.yaw = 0; this.pitch = 0;
+    this._lastSurvivors = m.total;
+    this._toast('🌐 온라인 매치 시작 — 화면을 클릭해 조준을 잠그세요');
+  }
+
+  _applyYou() {
+    if (this.onlineYouId == null || !this.game) return;
+    this.human = this.game.players.find((p) => p.id === this.onlineYouId) || null;
+    if (this.human) {
+      const fig = this.actors.get(this.human.id);
+      if (fig) { this.scene3.remove(fig); this.actors.delete(this.human.id); }
+      const hpS = this.hpSprites && this.hpSprites.get(this.human.id);
+      if (hpS) { hpS.visible = false; }
+    }
+  }
+
+  _onlineSnap(m) {
+    if (!this.online || !this.game) return;
+    if (!this.human) this._applyYou();
+    const g = this.game;
+    g.t = m.t;
+    g.zone.radius = m.zone.r;
+    g.zone.nextShrink = m.t + m.zone.next;
+    for (const row of m.players) {
+      const p = g.players.find((x) => x.id === row[0]);
+      if (!p) continue;
+      if (row.length === 1) { if (p.alive) { p.alive = false; if (!g.placementOrder.includes(p.id)) g.placementOrder.push(p.id); g.corpses.push({ id: p.id, x: p.x, y: p.y, skin: p.skin, name: p.name, at: g.t, yaw: p.aim }); } continue; }
+      const [, x, y, z, aim, hp, balls, crafting, shield, mg, buff, cover] = row;
+      // don't snap our own aim (mouse-owned), but position is server-authoritative
+      p.x = x; p.y = y; p.z = z; p.hp = hp; p.snowballs = balls;
+      p.crafting = !!crafting; p.shieldHits = shield;
+      p.mg = mg > 0 ? { ammo: mg, until: g.t + 99, fireCd: 0 } : null;
+      p.buff = buff ? { kind: buff, until: g.t + 99, mul: 1 } : null;
+      p.cover = !!cover;
+      if (!this.human || p.id !== this.human.id) p.aim = aim;
+    }
+    // projectiles: sync by id
+    const ids = new Set();
+    for (const [id, x, y, flat, t100] of m.balls) {
+      ids.add(id);
+      let sb = g.snowballs.find((s) => s.id === id);
+      if (!sb) { sb = { id, x, y, dirX: 0, dirY: 0, traveled: t100, range: 100, speed: 0, flat: !!flat, dead: false }; g.snowballs.push(sb); }
+      sb.x = x; sb.y = y; sb.traveled = t100; sb.range = 100;
+    }
+    g.snowballs = g.snowballs.filter((s) => ids.has(s.id));
+    // walls / decoys
+    const wids = new Set();
+    for (const [id, x, y, angle, hp] of m.walls) {
+      wids.add(id);
+      let w = g.walls.find((v) => v.id === id);
+      if (!w) { w = { id, x, y, angle, hp }; g.walls.push(w); }
+      w.hp = hp;
+    }
+    g.walls = g.walls.filter((w) => wids.has(w.id));
+    const dids = new Set();
+    for (const [id, x, y] of m.decoys) {
+      dids.add(id);
+      if (!g.decoys.find((v) => v.id === id)) g.decoys.push({ id, x, y, alive: true, until: g.t + 99 });
+    }
+    g.decoys = g.decoys.filter((d) => dids.has(d.id));
+    // pickups / piles state
+    for (const [id, taken, x, y, buffKind] of m.pickups) {
+      const it = g.pickups.find((v) => v.id === id);
+      if (it) { it.takenUntil = taken ? g.t + 5 : 0; it.x = x; it.y = y; if (buffKind && it.buff) it.buff.kind = buffKind; }
+    }
+    for (const [id, cooling, x, y] of m.piles) {
+      const pl = g.piles.find((v) => v.id === id);
+      if (pl) { pl.cooldownUntil = cooling ? g.t + 5 : 0; pl.x = x; pl.y = y; }
+    }
+    // events -> kill feed, zone warnings
+    for (const e of m.events || []) {
+      if (e.type === 'kill') {
+        const by = g.players.find((p) => p.id === e.by), v = g.players.find((p) => p.id === e.victim);
+        if (by && v) this.killFeed.push({ text: `${by.name} ❄→ ${v.name}`, until: performance.now() + 4200 });
+      }
+      if (e.type === 'zoneShrink') { this.audio.zoneWarn(); this._toast('⚠ 눈보라 구역이 좁아집니다!'); }
+      if (e.type === 'pad' && this.human && e.id === this.human.id) this._toast('🌀 스프링 점프!', 1200);
+    }
+    if (this.killFeed.length > 5) this.killFeed = this.killFeed.slice(-5);
+    const surv = m.alive;
+    if (surv !== this._lastSurvivors) { this.audio.setIntensity(surv); this._lastSurvivors = surv; }
+    this._lastSnapAt = performance.now();
+  }
+
+  _onlineDied(m) {
+    this.ghost = true;
+    this._toast(`💀 탈락 — 최종 ${m.place}위 / ${m.total}명 · 처치 ${m.kills} — 유령 모드로 관전합니다 (WASD 이동)`, 6000);
+    this.audio.gameover();
+  }
+
+  _onlineOver(m) {
+    this.online = false;
+    const won = this.human && m.winner && m.winner.id === this.human.id;
+    const c = document.createElement('div'); c.className = 'sr-result ' + (won ? 'sr-win' : 'sr-lose');
+    const big = document.createElement('div'); big.className = 'sr-place';
+    big.textContent = won ? '🏆' : '🏁';
+    const h2 = document.createElement('h2');
+    h2.textContent = won ? '설원의 왕!' : `우승: ${m.winner ? m.winner.name : '-'}`;
+    c.appendChild(big); c.appendChild(h2);
+    c.appendChild(el('p', 'sr-sub', '잠시 후 방 로비로 돌아갑니다 — 준비를 누르면 리매치!'));
+    c.appendChild(this._btn('타이틀로', () => { this.net && this.net.send({ type: 'leave' }); this._showTitle(); }));
+    this.overlay.innerHTML = ''; this.overlay.appendChild(c); this.overlay.style.display = 'flex';
+    if (won) this.audio.fanfare();
+    this.sceneName = 'result';
   }
 
   _enterPlay() {
@@ -590,10 +913,19 @@ export class SnowApp {
       this.keys[e.code] = true;
       if (e.code === 'Space' && this.sceneName === 'result') { e.preventDefault(); this.newGame(); }
       if (this.sceneName === 'play') {
-        if (e.code === 'KeyE') this._tryCraft();
-        if (e.code === 'KeyQ') this._act('wall');
-        if (e.code === 'KeyF') this._act('decoy');
-        if (e.code === 'Space' && E.jump(this.game, this.human)) this.audio.throw();
+        if (this.ghost) {
+          if (e.code === 'Enter' && !this.online && this.game) { this.ghost = false; this._showResult(); }
+        } else if (this.online) {
+          if (e.code === 'KeyE') this._queuedCraft = true;
+          if (e.code === 'KeyQ') this._queuedWall = true;
+          if (e.code === 'KeyF') this._queuedDecoy = true;
+          if (e.code === 'Space') this._queuedJump = true;
+        } else {
+          if (e.code === 'KeyE') this._tryCraft();
+          if (e.code === 'KeyQ') this._act('wall');
+          if (e.code === 'KeyF') this._act('decoy');
+          if (e.code === 'Space' && E.jump(this.game, this.human)) this.audio.throw();
+        }
         if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space'].includes(e.code)) e.preventDefault();
       }
       if (e.code === 'KeyM') this._showMinimap = !this._showMinimap;
@@ -635,8 +967,12 @@ export class SnowApp {
     this.canvas.addEventListener('mouseup', () => {
       if (this.sceneName === 'play' && this.locked && this.mouse.down) {
         const h = this.human, g = this.game;
-        // while the machine gun is active the button sprays instead of charging
-        if (!(h && h.mg && g && h.mg.until > g.t && h.mg.ammo > 0)) this._throw(performance.now() - this.mouse.downAt);
+        const mgActive = h && h.mg && g && h.mg.ammo > 0 && (this.online || h.mg.until > g.t);
+        if (!mgActive && !this.ghost) {
+          if (this.online) {
+            if (h && h.snowballs > 0) { this._queuedThrow = E.chargeFromMs(performance.now() - this.mouse.downAt); this.audio.throw(); this.viewKick = 1; }
+          } else this._throw(performance.now() - this.mouse.downAt);
+        }
         this.mouse.down = false;
       }
     });
@@ -679,6 +1015,10 @@ export class SnowApp {
       return;
     }
     if (this.sceneName !== 'play') return;
+    // ---- online: send inputs, server owns simulation ----
+    if (this.online) { this._updateOnline(dt); return; }
+    // ---- solo ghost: free-fly spectate after death ----
+    if (this.ghost) { this._updateGhost(dt); if (this.game && !this.game.over) { E.step(this.game, dt); this._drainSoloEvents(); } else if (this.game && this.game.over) this._showResult(); return; }
     const g = this.game, h = this.human;
     h.aim = this.yaw;
     if (h.alive && !h.crafting) {
@@ -708,7 +1048,18 @@ export class SnowApp {
     if (h.hp < beforeHp) { this.audio.hit(); this.damageFlashUntil = performance.now() + 250; }
     if ((g.kills[h.id] || 0) > killsBefore) this.hitMarkerUntil = performance.now() + 400;
     else if (g.stats.hits > hitsBefore) this.hitMarkerUntil = Math.max(this.hitMarkerUntil, performance.now() + 220);
-    if (beforeAlive && !h.alive) this._humanLastCause = '눈뭉치에 맞아 탈락했습니다.';
+    if (beforeAlive && !h.alive) {
+      this._humanLastCause = '눈뭉치에 맞아 탈락했습니다.';
+      // solo ghost mode: announce placement, keep watching the match play out
+      if (!g.over) {
+        this.ghost = true;
+        const place = g.players.length - g.placementOrder.indexOf(h.id);
+        this.ghostPos = { x: h.x, y: h.y, z: 60 };
+        this._toast(`💀 탈락 — ${place}위 / ${g.players.length}명 · 유령 모드로 관전 (WASD+마우스, Space 상승/C 하강, Enter 결과 보기)`, 7000);
+        this.audio.gameover();
+        return;
+      }
+    }
     for (const e of g.events.splice(0)) {
       if (e.type === 'kill') {
         const by = g.players.find((p) => p.id === e.by), v = g.players.find((p) => p.id === e.victim);
@@ -745,18 +1096,85 @@ export class SnowApp {
     if (g.over) this._showResult();
   }
 
+  // ghost spectate: free-fly camera (WASD + mouse, Space up, C down)
+  _updateGhost(dt) {
+    if (!this.ghostPos) this.ghostPos = { x: this.human ? this.human.x : C.map.size / 2, y: this.human ? this.human.y : C.map.size / 2, z: 60 };
+    const sp = 260 * dt;
+    let f = 0, r = 0;
+    if (this.keys['KeyW'] || this.keys['ArrowUp']) f += 1;
+    if (this.keys['KeyS'] || this.keys['ArrowDown']) f -= 1;
+    if (this.keys['KeyD'] || this.keys['ArrowRight']) r += 1;
+    if (this.keys['KeyA'] || this.keys['ArrowLeft']) r -= 1;
+    const cos = Math.cos(this.yaw), sin = Math.sin(this.yaw);
+    this.ghostPos.x = Math.max(0, Math.min(C.map.size, this.ghostPos.x + (cos * f - sin * r) * sp));
+    this.ghostPos.y = Math.max(0, Math.min(C.map.size, this.ghostPos.y + (sin * f + cos * r) * sp));
+    if (this.keys['Space']) this.ghostPos.z = Math.min(400, this.ghostPos.z + 160 * dt);
+    if (this.keys['KeyC']) this.ghostPos.z = Math.max(10, this.ghostPos.z - 160 * dt);
+  }
+
+  // solo ghost: keep kill feed / zone warnings flowing while spectating
+  _drainSoloEvents() {
+    const g = this.game;
+    for (const e of g.events.splice(0)) {
+      if (e.type === 'kill') {
+        const by = g.players.find((p) => p.id === e.by), v = g.players.find((p) => p.id === e.victim);
+        if (by && v) this.killFeed.push({ text: `${by.name} ❄→ ${v.name}`, until: performance.now() + 4200 });
+      }
+    }
+    if (this.killFeed.length > 5) this.killFeed = this.killFeed.slice(-5);
+    if (g.zone.shrinks !== this._lastShrinks) { this._lastShrinks = g.zone.shrinks; this.audio.zoneWarn(); }
+  }
+
+  // online play: gather local input and ship it to the server (20Hz alongside frames)
+  _updateOnline(dt) {
+    const h = this.human;
+    if (!h) return;
+    if (this.ghost) { this._updateGhost(dt); return; }
+    let f = 0, r = 0;
+    if (this.keys['KeyW'] || this.keys['ArrowUp']) f += 1;
+    if (this.keys['KeyS'] || this.keys['ArrowDown']) f -= 1;
+    if (this.keys['KeyD'] || this.keys['ArrowRight']) r += 1;
+    if (this.keys['KeyA'] || this.keys['ArrowLeft']) r -= 1;
+    const cos = Math.cos(this.yaw), sin = Math.sin(this.yaw);
+    const mvx = f || r ? cos * f - sin * r : 0;
+    const mvy = f || r ? sin * f + cos * r : 0;
+    if (f || r) this.bobT += dt * 9;
+    h.aim = this.yaw;
+    const mgActive = h.mg && h.mg.ammo > 0;
+    this.net.send({
+      type: 'input',
+      mvx, mvy, aim: this.yaw, cover: !!this.keys['KeyC'],
+      jump: this._queuedJump || undefined,
+      craft: this._queuedCraft || undefined,
+      wall: this._queuedWall || undefined,
+      decoy: this._queuedDecoy || undefined,
+      throwCharge: this._queuedThrow != null ? this._queuedThrow : undefined,
+      mg: !!(mgActive && this.mouse.down && this.locked),
+    });
+    this._queuedJump = this._queuedCraft = this._queuedWall = this._queuedDecoy = false;
+    this._queuedThrow = null;
+    // local hit feedback from hp deltas
+    if (this._lastHp != null && h.hp < this._lastHp) { this.audio.hit(); this.damageFlashUntil = performance.now() + 250; }
+    this._lastHp = h.hp;
+  }
+
   // ---- sync engine state -> 3D scene -------------------------------------------
   _sync3d(now) {
     const g = this.game, s = this.scene3;
     if (!s) return;
     // camera
-    const h = this.human;
-    const bob = Math.sin(this.bobT) * 0.8;
-    const eyeY = EYE + bob + (h.z || 0);   // jump/pad/tower height raises the camera
-    this.camera.position.set(h.x, eyeY, h.y);
-    const lookX = h.x + Math.cos(this.yaw) * Math.cos(this.pitch) * 10;
-    const lookY = eyeY + Math.sin(this.pitch) * 10;
-    const lookZ = h.y + Math.sin(this.yaw) * Math.cos(this.pitch) * 10;
+    const h = this.human || { x: g.zone.cx, y: g.zone.cy, z: 40 };
+    let camX, camY, camZ;
+    if (this.ghost && this.ghostPos) {
+      camX = this.ghostPos.x; camY = this.ghostPos.z; camZ = this.ghostPos.y;
+    } else {
+      const bob = Math.sin(this.bobT) * 0.8;
+      camX = h.x; camY = EYE + bob + (h.z || 0); camZ = h.y; // jump/pad/tower height raises the camera
+    }
+    this.camera.position.set(camX, camY, camZ);
+    const lookX = camX + Math.cos(this.yaw) * Math.cos(this.pitch) * 10;
+    const lookY = camY + Math.sin(this.pitch) * 10;
+    const lookZ = camZ + Math.sin(this.yaw) * Math.cos(this.pitch) * 10;
     this.camera.lookAt(lookX, lookY, lookZ);
 
     // actors: position + walk swing + aim yaw + floating HP bar
@@ -1074,7 +1492,14 @@ export class SnowApp {
   _renderFx(now) {
     const ctx = this.fxCtx;
     ctx.clearRect(0, 0, this.vw, this.vh);
-    if (this.sceneName !== 'play') return;
+    if (this.sceneName !== 'play' || !this.human) return;
+    if (this.ghost) { // spectator banner instead of crosshair/viewmodel
+      ctx.fillStyle = 'rgba(13,27,42,0.75)';
+      ctx.fillRect(this.vw / 2 - 190, 14, 380, 34);
+      ctx.fillStyle = '#A8D8EA'; ctx.font = 'bold 14px system-ui'; ctx.textAlign = 'center';
+      ctx.fillText(`👻 관전 중 · 생존 ${this._lastSurvivors ?? ''}${this.online ? '' : ' · Enter=결과'}`, this.vw / 2, 36);
+      return;
+    }
     const h = this.human;
 
     // outside-zone tint
@@ -1198,7 +1623,8 @@ export class SnowApp {
     if (this.sceneName !== 'play' && this.sceneName !== 'drop') { this.hud.style.display = 'none'; return; }
     this.hud.style.display = 'block';
     const g = this.game, h = this.human;
-    const surv = E.aliveCount(g);
+    if (!g || !h) return; // online: waiting for 'you' assignment
+    const surv = this.online ? (this._lastSurvivors || g.players.length) : E.aliveCount(g);
     const act = actForSurvivors(surv);
     const nextShrink = Math.max(0, Math.ceil(g.zone.nextShrink - g.t));
     this.hud.textContent = '';

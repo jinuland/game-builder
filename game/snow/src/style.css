@@ -75,11 +75,28 @@ html, body { margin: 0; height: 100%; background: var(--navy); color: var(--whit
 /* class selection on title */
 .sr-classrow { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; max-width: 620px; margin: 6px auto 14px; }
 .sr-class { background: rgba(255,255,255,0.07); border: 1px solid rgba(168,216,234,0.4); border-radius: 10px;
-  padding: 10px 12px; color: var(--white); cursor: pointer; text-align: left; display: flex; flex-direction: column; gap: 3px; }
+  padding: 8px 10px; color: var(--white); cursor: pointer; text-align: left; display: flex; flex-direction: row; gap: 10px; align-items: center; }
+.sr-class-img { width: 44px; height: 54px; object-fit: contain; flex: 0 0 auto; filter: drop-shadow(0 2px 3px rgba(0,0,0,0.4)); }
+.sr-class-txt { display: flex; flex-direction: column; gap: 3px; }
 .sr-class b { font-size: 13px; color: var(--ice); }
 .sr-class span { font-size: 11px; color: rgba(245,245,245,0.65); line-height: 1.4; }
 .sr-class.on { border-color: var(--orange); background: rgba(255,107,53,0.16); }
 .sr-class.on b { color: var(--orange); }
+/* nickname + room code inputs */
+.sr-nickrow { display: flex; gap: 8px; justify-content: center; align-items: center; margin: 10px 0; }
+.sr-nickrow > span { font-size: 13px; color: var(--ice); }
+.sr-nick { background: rgba(255,255,255,0.08); border: 1px solid var(--ice); border-radius: 8px;
+  color: var(--white); font-size: 15px; padding: 9px 14px; width: 200px; text-align: center; }
+.sr-nick:focus { outline: none; border-color: var(--orange); }
+/* online room list / lobby */
+.sr-roomlist { display: flex; flex-direction: column; gap: 8px; max-width: 420px; margin: 10px auto; max-height: 300px; overflow: auto; }
+.sr-room { background: rgba(255,255,255,0.07); border: 1px solid rgba(168,216,234,0.4); border-radius: 10px;
+  padding: 10px 16px; color: var(--white); cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.sr-room:hover { border-color: var(--orange); }
+.sr-room b { color: var(--aurora); letter-spacing: 0.12em; }
+.sr-room span { font-size: 12px; color: rgba(245,245,245,0.7); }
+.sr-room-static { cursor: default; }
+.sr-room-static:hover { border-color: rgba(168,216,234,0.4); }
 /* shield & class HUD tags */
 .sr-shield { font-size: 13px; font-weight: 800; color: #4d9fff; text-shadow: 0 1px 2px #000; }
 .sr-class-tag { font-size: 11px; color: rgba(245,245,245,0.7); text-shadow: 0 1px 2px #000; }
