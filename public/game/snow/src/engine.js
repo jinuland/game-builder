@@ -484,7 +484,10 @@ export function startCraft(g, p) {
   if (!p.alive || p.crafting) return false;
   const pile = nearestPile(g, p);
   if (!pile) return false;
-  p.crafting = true; p.craftTimer = C.craft.seconds * ((p.mods && p.mods.craftSec) || 1) * buffMul(g, p, 'craft'); p.craftPile = pile.id;
+  p.crafting = true;
+  p.craftTimer = C.craft.seconds * ((p.mods && p.mods.craftSec) || 1) * buffMul(g, p, 'craft');
+  p.craftTotal = p.craftTimer; // for progress ring (class/buff can shorten it)
+  p.craftPile = pile.id;
   g.stats.craftAttempts++;
   g.events.push({ t: g.t, type: 'craftStart', id: p.id });
   return true;

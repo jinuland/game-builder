@@ -217,7 +217,7 @@ function snapshot(room) {
     t: Math.round(g.t * 100) / 100,
     tick: room.tick,
     zone: { r: Math.round(g.zone.radius), next: Math.round(g.zone.nextShrink - g.t) },
-    players: g.players.map((p) => p.alive ? [p.id, Math.round(p.x), Math.round(p.y), Math.round(p.z), Math.round(p.aim * 100) / 100, p.hp, p.snowballs, p.crafting ? 1 : 0, p.shieldHits, p.mg ? p.mg.ammo : 0, p.buff ? p.buff.kind : 0, p.cover ? 1 : 0, p.sleepUntil > g.t ? 1 : 0, p.chargeUntil > g.t ? 1 : 0, p.hasClub ? 1 : 0, p.caps || 0, p.item ? p.item.id : 0, p.item ? p.item.usesLeft : 0, Math.round(p.jetFuel || 0)] : [p.id]),
+    players: g.players.map((p) => p.alive ? [p.id, Math.round(p.x), Math.round(p.y), Math.round(p.z), Math.round(p.aim * 100) / 100, p.hp, p.snowballs, p.crafting ? Math.max(1, Math.round(p.craftTimer * 10)) : 0, p.shieldHits, p.mg ? p.mg.ammo : 0, p.buff ? p.buff.kind : 0, p.cover ? 1 : 0, p.sleepUntil > g.t ? 1 : 0, p.chargeUntil > g.t ? 1 : 0, p.hasClub ? 1 : 0, p.caps || 0, p.item ? p.item.id : 0, p.item ? p.item.usesLeft : 0, Math.round(p.jetFuel || 0)] : [p.id]),
     caps: g.caps.map((cp) => [cp.id, (cp.gone || cp.takenUntil > g.t) ? 1 : 0, Math.round(cp.x), Math.round(cp.y), cp.amount]),
     nades: g.grenades.map((gr) => [gr.id, Math.round(gr.x), Math.round(gr.y), Math.round(gr.z || 0), Math.round(gr.lx), Math.round(gr.ly), gr.radius, Math.round((gr.explodeAt - g.t) * 10) / 10, gr.exploded ? 1 : 0]),
     balls: g.snowballs.map((s) => [s.id, Math.round(s.x), Math.round(s.y), s.flat ? 1 : 0, Math.round((s.traveled / (s.range || 1)) * 100)]),

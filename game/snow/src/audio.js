@@ -18,11 +18,18 @@ export class AudioEngine {
     this.started = true;
     this._startBgm();
   }
-  resume() { if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume(); }
+  resume() { if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume().catch(() => {}); }
+  // browsers suspend the context on tab switch / pointer-lock transitions;
+  // check before every sound so audio recovers by itself
+  _ok() {
+    if (!this.started || this.muted) return false;
+    if (this.ctx.state === 'suspended') { this.resume(); return this.ctx.state === 'running'; }
+    return true;
+  }
   setMuted(m) { this.muted = m; if (this.master) this.master.gain.value = m ? 0 : 0.5; }
 
   _tone(freq, dur, type = 'sine', vol = 0.4, glide = 0, dest = this.sfx) {
-    if (!this.started || this.muted) return;
+    if (!this._ok()) return;
     const t = this.ctx.currentTime; const o = this.ctx.createOscillator(); const g = this.ctx.createGain();
     o.type = type; o.frequency.setValueAtTime(freq, t);
     if (glide) o.frequency.exponentialRampToValueAtTime(Math.max(20, freq + glide), t + dur);
@@ -31,7 +38,7 @@ export class AudioEngine {
     o.connect(g); g.connect(dest || this.sfx); o.start(t); o.stop(t + dur + 0.02);
   }
   _noise(dur, vol = 0.4, hp = 800) {
-    if (!this.started || this.muted) return;
+    if (!this._ok()) return;
     const t = this.ctx.currentTime; const n = this.ctx.sampleRate * dur;
     const buf = this.ctx.createBuffer(1, n, this.ctx.sampleRate); const d = buf.getChannelData(0);
     for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n);

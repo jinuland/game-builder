@@ -462,52 +462,62 @@ export class SnowApp {
     const pal = PALETTES[skin] || PALETTES.bot;
     const gp = new THREE.Group();
     const S = CHAR_SCALE;
-    // PERF: share materials across all figures (19 bots × 10 parts used to
-    // allocate ~190 materials -> constant GPU state churn)
+    // PERF: share materials AND geometries across all figures (19 bots × 10
+    // parts used to allocate ~190 materials + ~190 geometries)
     this._matCache = this._matCache || new Map();
     const mat = (c) => {
       let m2 = this._matCache.get(c);
       if (!m2) { m2 = new THREE.MeshStandardMaterial({ color: c, roughness: 0.9, flatShading: true }); this._matCache.set(c, m2); }
       return m2;
     };
+    this._geoCache = this._geoCache || new Map();
+    const geo = (kind, ...args) => {
+      const key = kind + args.join(',');
+      let g2 = this._geoCache.get(key);
+      if (!g2) {
+        g2 = kind === 'box' ? new THREE.BoxGeometry(...args) : new THREE.SphereGeometry(...args);
+        this._geoCache.set(key, g2);
+      }
+      return g2;
+    };
     if (isUser) {
-      const scarf = new THREE.Mesh(new THREE.BoxGeometry(S * 0.5, S * 0.16, S * 0.48), mat(0xff6b35));
+      const scarf = new THREE.Mesh(geo('box', S * 0.5, S * 0.16, S * 0.48), mat(0xff6b35));
       scarf.position.y = S * 1.72; gp.add(scarf);
-      const tail = new THREE.Mesh(new THREE.BoxGeometry(S * 0.14, S * 0.5, S * 0.1), mat(0xff6b35));
+      const tail = new THREE.Mesh(geo('box', S * 0.14, S * 0.5, S * 0.1), mat(0xff6b35));
       tail.position.set(S * 0.2, S * 1.45, -S * 0.26); gp.add(tail);
-      const beanie = new THREE.Mesh(new THREE.SphereGeometry(S * 0.26, 10, 8, 0, Math.PI * 2, 0, Math.PI / 2), mat(0xffd43b));
+      const beanie = new THREE.Mesh(geo('sph', S * 0.26, 10, 8, 0, Math.PI * 2, 0, Math.PI / 2), mat(0xffd43b));
       beanie.position.y = S * 2.12; gp.add(beanie);
-      const pom = new THREE.Mesh(new THREE.SphereGeometry(S * 0.09, 8, 6), mat(0xffffff));
+      const pom = new THREE.Mesh(geo('sph', S * 0.09, 8, 6), mat(0xffffff));
       pom.position.y = S * 2.3; gp.add(pom);
     }
     // legs
-    const legGeo = new THREE.BoxGeometry(S * 0.28, S * 0.8, S * 0.3);
+    const legGeo = geo('box', S * 0.28, S * 0.8, S * 0.3);
     const legL = new THREE.Mesh(legGeo, mat(pal.pants)); legL.position.set(-S * 0.18, S * 0.4, 0); gp.add(legL);
     const legR = new THREE.Mesh(legGeo, mat(pal.pants)); legR.position.set(S * 0.18, S * 0.4, 0); gp.add(legR);
     // boots (e.g. Snow Runner's yellow shoes)
     if (pal.boots) {
-      const bootGeo = new THREE.BoxGeometry(S * 0.32, S * 0.18, S * 0.4);
+      const bootGeo = geo('box', S * 0.32, S * 0.18, S * 0.4);
       const bootL = new THREE.Mesh(bootGeo, mat(pal.boots)); bootL.position.set(-S * 0.18, S * 0.09, S * 0.04); gp.add(bootL);
       const bootR = new THREE.Mesh(bootGeo, mat(pal.boots)); bootR.position.set(S * 0.18, S * 0.09, S * 0.04); gp.add(bootR);
     }
     // torso (puffy jacket)
-    const torso = new THREE.Mesh(new THREE.BoxGeometry(S * 0.85, S * 0.9, S * 0.5), mat(pal.jacket));
+    const torso = new THREE.Mesh(geo('box', S * 0.85, S * 0.9, S * 0.5), mat(pal.jacket));
     torso.position.y = S * 1.25; gp.add(torso);
     // accent stripe
-    const stripe = new THREE.Mesh(new THREE.BoxGeometry(S * 0.87, S * 0.14, S * 0.52), mat(pal.accent));
+    const stripe = new THREE.Mesh(geo('box', S * 0.87, S * 0.14, S * 0.52), mat(pal.accent));
     stripe.position.y = S * 1.12; gp.add(stripe);
     // arms
-    const armGeo = new THREE.BoxGeometry(S * 0.22, S * 0.75, S * 0.24);
+    const armGeo = geo('box', S * 0.22, S * 0.75, S * 0.24);
     const armL = new THREE.Mesh(armGeo, mat(pal.jacket)); armL.position.set(-S * 0.58, S * 1.25, 0); gp.add(armL);
     const armR = new THREE.Mesh(armGeo, mat(pal.jacket)); armR.position.set(S * 0.58, S * 1.25, 0); gp.add(armR);
     // head + hood
-    const head = new THREE.Mesh(new THREE.BoxGeometry(S * 0.44, S * 0.42, S * 0.42), mat(pal.head));
+    const head = new THREE.Mesh(geo('box', S * 0.44, S * 0.42, S * 0.42), mat(pal.head));
     head.position.y = S * 1.95; gp.add(head);
-    const hood = new THREE.Mesh(new THREE.BoxGeometry(S * 0.54, S * 0.24, S * 0.5), mat(pal.jacket));
+    const hood = new THREE.Mesh(geo('box', S * 0.54, S * 0.24, S * 0.5), mat(pal.jacket));
     hood.position.y = S * 2.18; gp.add(hood);
     if (isNpc) {
       // grey visor band to mark bots
-      const visor = new THREE.Mesh(new THREE.BoxGeometry(S * 0.46, S * 0.1, S * 0.05), mat(0x3d4148));
+      const visor = new THREE.Mesh(geo('box', S * 0.46, S * 0.1, S * 0.05), mat(0x3d4148));
       visor.position.set(0, S * 1.98, S * 0.22); gp.add(visor);
     }
     gp.userData = { armR, armL, legL, legR, S };
@@ -619,58 +629,92 @@ export class SnowApp {
   _showTitle() {
     this.sceneName = 'title'; this.hud.style.display = 'none';
     if (document.pointerLockElement) document.exitPointerLock();
-    const c = document.createElement('div'); c.className = 'sr-title';
+    this._mode = this._mode || 'solo';
+    this._difficulty = this._difficulty || 'normal';
+    this._total = this._total || C.match.total;
+    this._classId = this._classId || 'jack';
+    this.invertY = this.invertY ?? false;
+    const w = this._wallet();
+
+    const c = document.createElement('div'); c.className = 'sr-title sr-title2';
+    // hero
+    const hero = el('div', 'sr-hero');
     const h = document.createElement('h1'); h.textContent = '스노우 로얄';
-    const sub = document.createElement('p'); sub.className = 'sr-sub'; sub.textContent = 'Snow Royale — 3D 1인칭 눈싸움 배틀로얄';
-    c.appendChild(h); c.appendChild(sub);
-    // nickname (shown to other players online)
-    const nickRow = document.createElement('div'); nickRow.className = 'sr-nickrow';
-    const nickLabel = document.createElement('span'); nickLabel.textContent = '닉네임';
+    hero.appendChild(h);
+    hero.appendChild(el('p', 'sr-sub', '❄ 3D 1인칭 눈싸움 배틀로얄 — 20인 중 마지막 한 명이 되어라'));
+    c.appendChild(hero);
+
+    // top bar: nickname + wallet/shop + sound
+    const bar = el('div', 'sr-topbar');
+    const nickWrap = el('div', 'sr-bar-cell');
+    nickWrap.appendChild(el('span', 'sr-bar-label', '닉네임'));
     const nick = document.createElement('input');
     nick.className = 'sr-nick'; nick.maxLength = 12; nick.placeholder = '눈사람';
     nick.value = getNickname();
     nick.addEventListener('change', () => setNickname(nick.value.trim()));
-    nickRow.appendChild(nickLabel); nickRow.appendChild(nick);
-    c.appendChild(nickRow);
+    nickWrap.appendChild(nick);
     this._nickInput = nick;
-    // mode: solo vs online
-    this._mode = this._mode || 'solo';
-    const modeRow = document.createElement('div'); modeRow.className = 'sr-diffrow';
-    for (const [k, label] of [['solo', '🏔 1인 플레이 (봇 19)'], ['online', '🌐 온라인 플레이']]) {
-      const b = document.createElement('button'); b.className = 'sr-diff' + (this._mode === k ? ' on' : ''); b.textContent = label;
+    bar.appendChild(nickWrap);
+    const shopB = document.createElement('button'); shopB.className = 'sr-chip';
+    shopB.innerHTML = `🏪 상점 <b>🍾 ${w.caps}</b>${this._carryItem ? ` · 🎒 ${C.shop[this._carryItem].emoji}` : ''}`;
+    shopB.addEventListener('click', () => { this.audio.resume(); this._showShop(); });
+    bar.appendChild(shopB);
+    const statsB = document.createElement('button'); statsB.className = 'sr-chip'; statsB.textContent = '📊 전적';
+    statsB.addEventListener('click', () => { this.audio.resume(); this._showStats(); });
+    bar.appendChild(statsB);
+    const helpB = document.createElement('button'); helpB.className = 'sr-chip'; helpB.textContent = '❓ 조작법';
+    helpB.addEventListener('click', () => this._showHelp());
+    bar.appendChild(helpB);
+    const mute = document.createElement('button'); mute.className = 'sr-chip';
+    mute.textContent = this.audio.muted ? '🔇' : '🔊';
+    mute.addEventListener('click', () => { this.audio.setMuted(!this.audio.muted); mute.textContent = this.audio.muted ? '🔇' : '🔊'; });
+    bar.appendChild(mute);
+    c.appendChild(bar);
+
+    // mode tabs
+    const modeRow = el('div', 'sr-modes');
+    for (const [k, icon, label, desc] of [['solo', '🏔', '1인 플레이', '봇 19명과 대결'], ['online', '🌐', '온라인 플레이', '친구·공개 매치']]) {
+      const b = document.createElement('button'); b.className = 'sr-mode' + (this._mode === k ? ' on' : '');
+      b.innerHTML = `<i>${icon}</i><b>${label}</b><span>${desc}</span>`;
       b.addEventListener('click', () => { this._mode = k; this._showTitle(); });
       modeRow.appendChild(b);
     }
     c.appendChild(modeRow);
-    const diffRow = document.createElement('div'); diffRow.className = 'sr-diffrow';
-    this._difficulty = this._difficulty || 'normal';
+
+    // settings card: difficulty + size + invert (compact single card)
+    const settings = el('div', 'sr-card');
+    settings.appendChild(el('div', 'sr-card-title', '매치 설정'));
+    const diffRow = el('div', 'sr-diffrow');
     for (const [k, label] of [['easy', '쉬움'], ['normal', '보통'], ['hard', '어려움']]) {
       const b = document.createElement('button'); b.className = 'sr-diff' + (this._difficulty === k ? ' on' : ''); b.textContent = label;
       b.addEventListener('click', () => { this._difficulty = k; this._showTitle(); });
       diffRow.appendChild(b);
     }
-    c.appendChild(diffRow);
-    // match size (total players) selection
-    this._total = this._total || C.match.total;
-    const sizeRow = document.createElement('div'); sizeRow.className = 'sr-diffrow';
+    const sizeRow = el('div', 'sr-diffrow');
     for (const n of C.match.totalOptions) {
       const b = document.createElement('button'); b.className = 'sr-diff' + (this._total === n ? ' on' : ''); b.textContent = `${n}인`;
       b.addEventListener('click', () => { this._total = n; this._showTitle(); });
       sizeRow.appendChild(b);
     }
-    c.appendChild(sizeRow);
-    // class (character trait) selection
-    this._classId = this._classId || 'jack';
-    const clsHead = document.createElement('p'); clsHead.className = 'sr-sub'; clsHead.textContent = '캐릭터 특성 선택';
-    c.appendChild(clsHead);
-    const clsRow = document.createElement('div'); clsRow.className = 'sr-classrow';
+    const invRow = el('div', 'sr-diffrow');
+    const inv = document.createElement('button'); inv.className = 'sr-diff' + (this.invertY ? ' on' : '');
+    inv.textContent = `↕ 마우스 반전 ${this.invertY ? 'ON' : 'OFF'}`;
+    inv.addEventListener('click', () => { this.invertY = !this.invertY; this._showTitle(); });
+    invRow.appendChild(inv);
+    settings.appendChild(diffRow); settings.appendChild(sizeRow); settings.appendChild(invRow);
+    c.appendChild(settings);
+
+    // class card
+    const clsCard = el('div', 'sr-card');
+    clsCard.appendChild(el('div', 'sr-card-title', '캐릭터 특성'));
+    const clsRow = el('div', 'sr-classrow');
     for (const cls of Object.values(CLASSES)) {
       const b = document.createElement('button');
       b.className = 'sr-class' + (this._classId === cls.id ? ' on' : '');
       const img = document.createElement('img');
       img.className = 'sr-class-img'; img.alt = cls.name;
       try { img.src = this._classPreview(cls); } catch { /* preview optional */ }
-      const txt = document.createElement('div'); txt.className = 'sr-class-txt';
+      const txt = el('div', 'sr-class-txt');
       const nm = document.createElement('b'); nm.textContent = cls.name;
       const ds = document.createElement('span'); ds.textContent = cls.desc;
       txt.appendChild(nm); txt.appendChild(ds);
@@ -678,33 +722,33 @@ export class SnowApp {
       b.addEventListener('click', () => { this._classId = cls.id; this._showTitle(); });
       clsRow.appendChild(b);
     }
-    c.appendChild(clsRow);
-    // Y-axis invert option (default OFF = standard FPS: mouse up → look up)
-    this.invertY = this.invertY ?? false;
-    const inv = this._btn(this.invertY ? '↕ 마우스 상하 반전: 켜짐' : '↕ 마우스 상하 반전: 꺼짐', () => { this.invertY = !this.invertY; this._showTitle(); });
-    c.appendChild(inv);
+    clsCard.appendChild(clsRow);
+    c.appendChild(clsCard);
+
+    // primary actions
     if (this._mode === 'online') {
-      c.appendChild(this._btn('🌐 공개 방 목록 / 빠른 입장', () => this._showOnlineLobby(), true));
-      const codeRow = document.createElement('div'); codeRow.className = 'sr-nickrow';
+      const act = el('div', 'sr-actions');
+      act.appendChild(this._btn('⚡ 빠른 입장 / 공개 방 목록', () => this._showOnlineLobby(), true));
+      const codeRow = el('div', 'sr-nickrow');
       const codeIn = document.createElement('input'); codeIn.className = 'sr-nick'; codeIn.maxLength = 4;
-      codeIn.placeholder = '방 코드 (예: 4F2K)'; codeIn.style.textTransform = 'uppercase';
-      const joinB = document.createElement('button'); joinB.className = 'sr-btn'; joinB.style.width = 'auto'; joinB.style.margin = '0'; joinB.textContent = '코드로 입장';
+      codeIn.placeholder = '방 코드 (예: 4F2K)'; codeIn.style.textTransform = 'uppercase'; codeIn.style.width = '150px';
+      const joinB = document.createElement('button'); joinB.className = 'sr-btn'; joinB.style.width = 'auto'; joinB.style.margin = '0'; joinB.textContent = '입장';
       joinB.addEventListener('click', () => { if (codeIn.value.trim().length === 4) this._joinOnline({ code: codeIn.value.trim().toUpperCase() }); });
       codeRow.appendChild(codeIn); codeRow.appendChild(joinB);
-      c.appendChild(codeRow);
-      c.appendChild(this._btn('🏠 방 만들기 (공개)', () => this._joinOnline({ create: true, isPublic: true })));
-      c.appendChild(this._btn('🔒 방 만들기 (비공개 · 코드 공유)', () => this._joinOnline({ create: true, isPublic: false })));
-      c.appendChild(this._btn('📊 내 전적', () => this._showStats()));
+      const mkRow = el('div', 'sr-nickrow');
+      const pubB = document.createElement('button'); pubB.className = 'sr-btn'; pubB.style.width = 'auto'; pubB.style.margin = '0'; pubB.textContent = '🏠 공개 방 만들기';
+      pubB.addEventListener('click', () => { this.audio.resume(); this._joinOnline({ create: true, isPublic: true }); });
+      const privB = document.createElement('button'); privB.className = 'sr-btn'; privB.style.width = 'auto'; privB.style.margin = '0'; privB.textContent = '🔒 비공개 방';
+      privB.addEventListener('click', () => { this.audio.resume(); this._joinOnline({ create: true, isPublic: false }); });
+      mkRow.appendChild(pubB); mkRow.appendChild(privB);
+      act.appendChild(codeRow); act.appendChild(mkRow);
+      c.appendChild(act);
     } else {
-      const start = this._btn('낙하 시작', () => this.newGame(), true); c.appendChild(start);
+      const act = el('div', 'sr-actions');
+      act.appendChild(this._btn('❄ 낙하 시작', () => this.newGame(), true));
+      c.appendChild(act);
     }
-    const w = this._wallet();
-    c.appendChild(this._btn(`🏪 상점 · 🍾 ${w.caps} — 🎒 ${this._carryItem ? C.shop[this._carryItem].emoji + ' ' + C.shop[this._carryItem].name : '장착 없음'}`, () => this._showShop()));
-    c.appendChild(this._btn('❓ 조작법', () => this._showHelp()));
-    const mute = this._btn(this.audio.muted ? '🔇 사운드' : '🔊 사운드', () => { this.audio.setMuted(!this.audio.muted); mute.textContent = this.audio.muted ? '🔇 사운드' : '🔊 사운드'; });
-    c.appendChild(mute);
-    const foot = document.createElement('p'); foot.className = 'sr-foot';
-    foot.textContent = 'WASD 이동 · Space 점프/제트팩 · 좌클릭 투척 · F 근접(주먹/몽둥이) · X 아이템 · E 제작 · Q 설벽 · G 미끼 · C 엄폐 · M 지도';
+    const foot = el('p', 'sr-foot', 'WASD 이동 · Space 점프/제트팩 · 좌클릭 투척 · F 근접 · X 아이템 · E 제작 · Q 설벽 · G 미끼 · C 엄폐 · M 지도');
     c.appendChild(foot);
     this.overlay.innerHTML = ''; this.overlay.appendChild(c); this.overlay.style.display = 'flex';
   }
@@ -963,7 +1007,11 @@ export class SnowApp {
       const [, x, y, z, aim, hp, balls, crafting, shield, mg, buff, cover, asleep, charging, hasClub, caps, itemId, itemUses, jetFuel] = row;
       // don't snap our own aim (mouse-owned), but position is server-authoritative
       p.x = x; p.y = y; p.z = z; p.hp = hp; p.snowballs = balls;
-      p.crafting = !!crafting; p.shieldHits = shield;
+      // crafting wire format: 0 = no, N = craftTimer × 10 (drives the 3-2-1 ring)
+      p.crafting = !!crafting;
+      if (crafting) { p.craftTimer = crafting / 10; p.craftTotal = p.craftTotal || C.craft.seconds; }
+      else { p.craftTimer = 0; p.craftTotal = 0; }
+      p.shieldHits = shield;
       p.mg = mg > 0 ? { ammo: mg, until: g.t + 99, fireCd: 0 } : null;
       p.buff = buff ? { kind: buff, until: g.t + 99, mul: 1 } : null;
       p.cover = !!cover;
@@ -1112,6 +1160,7 @@ export class SnowApp {
   _bindInput() {
     window.addEventListener('keydown', (e) => {
       this.keys[e.code] = true;
+      this.audio.resume();
       if (e.code === 'Space' && this.sceneName === 'result') { e.preventDefault(); this.newGame(); }
       if (this.sceneName === 'play') {
         if (this.ghost) {
@@ -1150,8 +1199,10 @@ export class SnowApp {
 
     document.addEventListener('pointerlockchange', () => {
       this.locked = document.pointerLockElement === this.canvas;
+      this.audio.resume(); // pointer-lock transitions can suspend the ctx
       if (!this.locked && this.sceneName === 'play') this._toast('조준 잠금 해제 — 화면을 클릭해 다시 잠그세요');
     });
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) this.audio.resume(); });
     document.addEventListener('mousemove', (e) => {
       if (!this.locked || this.sceneName !== 'play') return;
       const sens = 0.0024;
@@ -1525,6 +1576,15 @@ export class SnowApp {
     // local hit feedback from hp deltas
     if (this._lastHp != null && h.hp < this._lastHp) { this.audio.hit(); this.damageFlashUntil = performance.now() + 250; }
     this._lastHp = h.hp;
+    // craft audio: heartbeat while crafting, chime when it completes
+    if (h.crafting) {
+      this._craftBeat = (this._craftBeat || 0) + dt;
+      if (this._craftBeat > 0.5) { this._craftBeat = 0; this.audio.craftTick(); }
+      this._wasCrafting = true;
+    } else if (this._wasCrafting) {
+      this._wasCrafting = false;
+      this.audio.craftDone();
+    }
   }
 
   // ---- sync engine state -> 3D scene -------------------------------------------
@@ -1648,41 +1708,40 @@ export class SnowApp {
       seen.add(sb.id);
       let m = this.sbMeshes.get(sb.id);
       if (!m) {
+        // PERF: shared geometries/materials; trail is ONE stretched capsule
+        // aligned to velocity instead of 5 history-tracked spheres
+        this._sbShared = this._sbShared || {
+          geoBall: new THREE.SphereGeometry(3.4, 10, 8),
+          geoBallFlat: new THREE.SphereGeometry(2.4, 10, 8),
+          geoTail: new THREE.SphereGeometry(1, 8, 6),
+          matBall: new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xbfe6ff, emissiveIntensity: 0.9, roughness: 0.4 }),
+          matBallFlat: new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xffe08a, emissiveIntensity: 1.3, roughness: 0.4 }),
+          matTail: new THREE.MeshBasicMaterial({ color: 0xdff2ff, transparent: true, opacity: 0.45, depthWrite: false }),
+        };
+        const sh = this._sbShared;
         m = new THREE.Group();
-        const ball = new THREE.Mesh(
-          new THREE.SphereGeometry(sb.flat ? 2.4 : 3.4, 12, 10),
-          new THREE.MeshStandardMaterial({
-            color: 0xffffff,
-            emissive: sb.flat ? 0xffe08a : 0xbfe6ff, emissiveIntensity: sb.flat ? 1.3 : 0.9, roughness: 0.4,
-          }),
-        );
+        const ball = new THREE.Mesh(sb.flat ? sh.geoBallFlat : sh.geoBall, sb.flat ? sh.matBallFlat : sh.matBall);
         m.add(ball);
-        // trail: small fading spheres
-        const trail = [];
-        for (let i = 0; i < 5; i++) {
-          const t = new THREE.Mesh(
-            new THREE.SphereGeometry(2.4 - i * 0.38, 8, 6),
-            new THREE.MeshBasicMaterial({ color: 0xdff2ff, transparent: true, opacity: 0.5 - i * 0.09 }),
-          );
-          m.add(t); trail.push(t);
-        }
-        m.userData.trail = trail;
-        m.userData.hist = [];
+        const tail = new THREE.Mesh(sh.geoTail, sh.matTail);
+        tail.scale.set(1.6, 1.6, 7); // stretched along travel dir
+        m.add(tail);
+        m.userData.tail = tail;
         s.add(m);
         this.sbMeshes.set(sb.id, m);
       }
       const t01 = sb.range > 0 ? sb.traveled / sb.range : 0;
       const apex = sb.flat ? 0 : Math.min(60, sb.range * 0.16); // MG rounds fly straight
       const z = Math.max(0, 4 * apex * t01 * (1 - t01)) + (sb.flat ? EYE - 2 : 12);
+      // tail points opposite the movement delta
+      const dx = sb.x - (m.userData.px ?? sb.x), dy2 = z - (m.userData.py ?? z), dz = sb.y - (m.userData.pz ?? sb.y);
+      m.userData.px = sb.x; m.userData.py = z; m.userData.pz = sb.y;
       m.position.set(sb.x, z, sb.y);
-      // update trail from history
-      const hist = m.userData.hist;
-      hist.unshift({ x: sb.x, y: z, z2: sb.y });
-      if (hist.length > 6) hist.pop();
-      m.userData.trail.forEach((tm, i) => {
-        const hp = hist[Math.min(i + 1, hist.length - 1)];
-        tm.position.set(hp.x - sb.x, hp.y - z, hp.z2 - sb.y);
-      });
+      const tl = Math.hypot(dx, dy2, dz);
+      if (tl > 0.01) {
+        const t2 = m.userData.tail;
+        t2.position.set(-dx / tl * 6, -dy2 / tl * 6, -dz / tl * 6);
+        t2.lookAt(m.position.x + dx, m.position.y + dy2, m.position.z + dz);
+      }
     }
     for (const [id, m] of this.sbMeshes) {
       if (!seen.has(id)) { this.scene3.remove(m); this.sbMeshes.delete(id); }
@@ -2172,7 +2231,7 @@ export class SnowApp {
       ctx.beginPath(); ctx.arc(hx - 6, hy - 18, 15 + charge * 3, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
     }
     if (h.crafting) {
-      const t = 1 - h.craftTimer / C.craft.seconds;
+      const t = 1 - h.craftTimer / (h.craftTotal || C.craft.seconds);
       const squeeze = Math.sin(now / 90) * 6;
       ctx.fillStyle = '#2c3e63';
       ctx.beginPath(); ctx.ellipse(cx - 46 + squeeze, base - 58, 26, 20, 0.4, 0, Math.PI * 2); ctx.fill();
@@ -2205,7 +2264,7 @@ export class SnowApp {
       ctx.fillText(`${Math.round(E.rangeForCharge(charge) / 10)}m`, cx, cy + 47);
     }
     if (h.crafting) {
-      const frac = 1 - h.craftTimer / C.craft.seconds;
+      const frac = 1 - h.craftTimer / (h.craftTotal || C.craft.seconds);
       const col = frac < 0.5 ? '#ffffff' : frac < 0.85 ? '#FF6B35' : '#DC143C';
       ctx.strokeStyle = col; ctx.lineWidth = 5;
       ctx.beginPath(); ctx.arc(cx, cy, 34, -Math.PI / 2, -Math.PI / 2 + frac * Math.PI * 2); ctx.stroke();
