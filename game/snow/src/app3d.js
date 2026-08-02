@@ -4,6 +4,7 @@
 // a glowing cylindrical storm wall for the shrinking zone, corpses that fall
 // over and stay, glowing snowballs with trails. Engine logic is unchanged.
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import * as E from './engine.js';
 import { AudioEngine } from './audio.js';
 import { CONFIG as C, SKINS, CLASSES, actForSurvivors } from './config.js';
@@ -73,7 +74,9 @@ export class SnowApp {
     this.root.innerHTML = '';
     this.root.className = 'sr-root';
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    // PERF: cap render resolution at 1.5x — retina 2x quadruples the pixel
+    // cost for barely visible gains in a fast low-poly game
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
     this.canvas = this.renderer.domElement;
     this.canvas.className = 'sr-canvas';
     this.root.appendChild(this.canvas);
@@ -108,7 +111,7 @@ export class SnowApp {
     this.renderer.setSize(w, h);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
     this.fx.width = w * dpr; this.fx.height = h * dpr;
     this.fx.style.width = w + 'px'; this.fx.style.height = h + 'px';
     this.fxCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -145,94 +148,70 @@ export class SnowApp {
     ground.position.set(C.map.size / 2, 0, C.map.size / 2);
     s.add(ground);
 
-    // distant mountain ring (low-poly cones)
+    // PERF: all static decor (mountains, rocks, trees, cabins) is merged into
+    // ONE mesh per material color — hundreds of draw calls collapse to ~7.
+    const buckets = new Map(); // colorKey -> {geos: [], mat}
+    const bucket = (color, flat = true) => {
+      const key = `${color}|${flat}`;
+      if (!buckets.has(key)) buckets.set(key, { geos: [], mat: new THREE.MeshStandardMaterial({ color, roughness: 1, flatShading: flat }) });
+      return buckets.get(key).geos;
+    };
+    const put = (geos, geo, x, y2, z, rx = 0, ry = 0, rz = 0) => {
+      geo.rotateX(rx); geo.rotateY(ry); geo.rotateZ(rz);
+      geo.translate(x, y2, z);
+      // mergeGeometries requires uniform indexing — polyhedra are non-indexed,
+      // cones/boxes are indexed, so normalize everything to non-indexed
+      geos.push(geo.index ? geo.toNonIndexed() : geo);
+    };
+    // distant mountain ring
     for (let i = 0; i < 14; i++) {
       const a = (i / 14) * Math.PI * 2;
       const r = C.map.size * 1.15;
       const h = 180 + (i % 4) * 70;
-      const cone = new THREE.Mesh(
-        new THREE.ConeGeometry(120 + (i % 3) * 60, h, 5),
-        new THREE.MeshStandardMaterial({ color: 0xcdd9e4, roughness: 1, flatShading: true }),
-      );
-      cone.position.set(C.map.size / 2 + Math.cos(a) * r, h / 2 - 24, C.map.size / 2 + Math.sin(a) * r);
-      s.add(cone);
+      put(bucket(0xcdd9e4), new THREE.ConeGeometry(120 + (i % 3) * 60, h, 5),
+        C.map.size / 2 + Math.cos(a) * r, h / 2 - 24, C.map.size / 2 + Math.sin(a) * r);
     }
-
-    // obstacles from engine: rocks / trees / cabins
+    // obstacles: rocks / trees / cabins
+    const SNOW = 0xf4f8fb;
     for (const o of g.obstacles) {
-      let mesh;
       if (o.kind === 'rock') {
-        mesh = new THREE.Mesh(
-          new THREE.DodecahedronGeometry(o.r, 0),
-          new THREE.MeshStandardMaterial({ color: 0x9aa7b4, roughness: 1, flatShading: true }),
-        );
-        mesh.position.set(o.x, o.r * 0.45, o.y);
-        mesh.rotation.set(o.yaw, o.yaw * 1.7, 0);
-        // snow cap
-        const cap = new THREE.Mesh(
-          new THREE.DodecahedronGeometry(o.r * 0.82, 0),
-          new THREE.MeshStandardMaterial({ color: 0xf4f8fb, roughness: 1, flatShading: true }),
-        );
-        cap.position.set(o.x, o.r * 0.75, o.y);
-        s.add(cap);
+        put(bucket(0x9aa7b4), new THREE.DodecahedronGeometry(o.r, 0), o.x, o.r * 0.45, o.y, o.yaw, o.yaw * 1.7, 0);
+        put(bucket(SNOW), new THREE.DodecahedronGeometry(o.r * 0.82, 0), o.x, o.r * 0.75, o.y);
       } else if (o.kind === 'tree') {
-        mesh = new THREE.Group();
-        const trunk = new THREE.Mesh(
-          new THREE.CylinderGeometry(o.r * 0.18, o.r * 0.24, o.r * 1.2, 6),
-          new THREE.MeshStandardMaterial({ color: 0x6d4c33, roughness: 1 }),
-        );
-        trunk.position.y = o.r * 0.6;
-        mesh.add(trunk);
+        put(bucket(0x6d4c33, false), new THREE.CylinderGeometry(o.r * 0.18, o.r * 0.24, o.r * 1.2, 6), o.x, o.r * 0.6, o.y);
         for (let t = 0; t < 3; t++) {
-          const tier = new THREE.Mesh(
-            new THREE.ConeGeometry(o.r * (1.5 - t * 0.35), o.r * 1.35, 7),
-            new THREE.MeshStandardMaterial({ color: t === 0 ? 0x2f5d43 : 0x3c7254, roughness: 1, flatShading: true }),
-          );
-          tier.position.y = o.r * (1.1 + t * 0.8);
-          mesh.add(tier);
-          const snowTier = new THREE.Mesh(
-            new THREE.ConeGeometry(o.r * (1.5 - t * 0.35) * 0.7, o.r * 0.4, 7),
-            new THREE.MeshStandardMaterial({ color: 0xf4f8fb, roughness: 1, flatShading: true }),
-          );
-          snowTier.position.y = o.r * (1.55 + t * 0.8);
-          mesh.add(snowTier);
+          put(bucket(t === 0 ? 0x2f5d43 : 0x3c7254), new THREE.ConeGeometry(o.r * (1.5 - t * 0.35), o.r * 1.35, 7), o.x, o.r * (1.1 + t * 0.8), o.y);
+          put(bucket(SNOW), new THREE.ConeGeometry(o.r * (1.5 - t * 0.35) * 0.7, o.r * 0.4, 7), o.x, o.r * (1.55 + t * 0.8), o.y);
         }
-        mesh.position.set(o.x, 0, o.y);
       } else { // cabin
-        mesh = new THREE.Group();
-        const body = new THREE.Mesh(
-          new THREE.BoxGeometry(o.r * 1.8, o.r * 0.9, o.r * 1.3),
-          new THREE.MeshStandardMaterial({ color: 0x7a5a3a, roughness: 1 }),
-        );
-        body.position.y = o.r * 0.45;
-        mesh.add(body);
-        const roof = new THREE.Mesh(
-          new THREE.ConeGeometry(o.r * 1.45, o.r * 0.8, 4),
-          new THREE.MeshStandardMaterial({ color: 0xf4f8fb, roughness: 1, flatShading: true }),
-        );
-        roof.position.y = o.r * 1.3;
-        roof.rotation.y = Math.PI / 4;
-        mesh.add(roof);
-        // warm window
+        put(bucket(0x7a5a3a, false), new THREE.BoxGeometry(o.r * 1.8, o.r * 0.9, o.r * 1.3), o.x, o.r * 0.45, o.y, 0, o.yaw, 0);
+        put(bucket(SNOW), new THREE.ConeGeometry(o.r * 1.45, o.r * 0.8, 4), o.x, o.r * 1.3, o.y, 0, o.yaw + Math.PI / 4, 0);
+        // warm window (basic material, kept separate but tiny)
         const win = new THREE.Mesh(
           new THREE.PlaneGeometry(o.r * 0.3, o.r * 0.3),
           new THREE.MeshBasicMaterial({ color: 0xffc266 }),
         );
-        win.position.set(0, o.r * 0.5, o.r * 0.66);
-        mesh.add(win);
-        mesh.rotation.y = o.yaw;
-        mesh.position.set(o.x, 0, o.y);
+        win.position.set(o.x + Math.sin(o.yaw) * o.r * 0.66, o.r * 0.5, o.y + Math.cos(o.yaw) * o.r * 0.66);
+        win.rotation.y = o.yaw;
+        s.add(win);
       }
-      s.add(mesh);
+    }
+    for (const { geos, mat } of buckets.values()) {
+      if (!geos.length) continue;
+      const merged = new THREE.Mesh(mergeGeometries(geos, false), mat);
+      merged.matrixAutoUpdate = false;
+      s.add(merged);
+      geos.forEach((ge) => ge.dispose());
     }
 
-    // snow piles: soft white mounds with sparkle
+    // snow piles: soft white mounds with sparkle (PERF: shared geometry+materials;
+    // per-pile material color changes swap between two cached materials)
     this.pileMeshes = new Map();
+    const pileGeo = new THREE.SphereGeometry(10, 10, 7, 0, Math.PI * 2, 0, Math.PI / 2);
+    this._pileMatReady = this._pileMatReady || new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85, emissive: 0x8fc9e8, emissiveIntensity: 0.12 });
+    this._pileMatCooling = this._pileMatCooling || new THREE.MeshStandardMaterial({ color: 0xc3cdd6, roughness: 0.85 });
     for (const pile of g.piles) {
-      const m = new THREE.Mesh(
-        new THREE.SphereGeometry(10, 10, 7, 0, Math.PI * 2, 0, Math.PI / 2),
-        new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85, emissive: 0x8fc9e8, emissiveIntensity: 0.12 }),
-      );
+      const m = new THREE.Mesh(pileGeo, this._pileMatReady);
       m.position.set(pile.x, 0, pile.y);
       m.scale.y = 0.62;
       s.add(m);
@@ -329,8 +308,8 @@ export class SnowApp {
     // enemy HP bars: billboard sprites above each actor
     this.hpSprites = new Map();
 
-    // snowfall particles
-    const flakes = 900;
+    // snowfall particles (PERF: 400 is visually identical through fog)
+    const flakes = 400;
     const fGeo = new THREE.BufferGeometry();
     const fPos = new Float32Array(flakes * 3);
     for (let i = 0; i < flakes; i++) {
@@ -483,17 +462,24 @@ export class SnowApp {
     const pal = PALETTES[skin] || PALETTES.bot;
     const gp = new THREE.Group();
     const S = CHAR_SCALE;
+    // PERF: share materials across all figures (19 bots × 10 parts used to
+    // allocate ~190 materials -> constant GPU state churn)
+    this._matCache = this._matCache || new Map();
+    const mat = (c) => {
+      let m2 = this._matCache.get(c);
+      if (!m2) { m2 = new THREE.MeshStandardMaterial({ color: c, roughness: 0.9, flatShading: true }); this._matCache.set(c, m2); }
+      return m2;
+    };
     if (isUser) {
-      const scarf = new THREE.Mesh(new THREE.BoxGeometry(S * 0.5, S * 0.16, S * 0.48), new THREE.MeshStandardMaterial({ color: 0xff6b35, roughness: 0.8 }));
+      const scarf = new THREE.Mesh(new THREE.BoxGeometry(S * 0.5, S * 0.16, S * 0.48), mat(0xff6b35));
       scarf.position.y = S * 1.72; gp.add(scarf);
-      const tail = new THREE.Mesh(new THREE.BoxGeometry(S * 0.14, S * 0.5, S * 0.1), new THREE.MeshStandardMaterial({ color: 0xff6b35, roughness: 0.8 }));
+      const tail = new THREE.Mesh(new THREE.BoxGeometry(S * 0.14, S * 0.5, S * 0.1), mat(0xff6b35));
       tail.position.set(S * 0.2, S * 1.45, -S * 0.26); gp.add(tail);
-      const beanie = new THREE.Mesh(new THREE.SphereGeometry(S * 0.26, 10, 8, 0, Math.PI * 2, 0, Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0xffd43b, roughness: 0.9 }));
+      const beanie = new THREE.Mesh(new THREE.SphereGeometry(S * 0.26, 10, 8, 0, Math.PI * 2, 0, Math.PI / 2), mat(0xffd43b));
       beanie.position.y = S * 2.12; gp.add(beanie);
-      const pom = new THREE.Mesh(new THREE.SphereGeometry(S * 0.09, 8, 6), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1 }));
+      const pom = new THREE.Mesh(new THREE.SphereGeometry(S * 0.09, 8, 6), mat(0xffffff));
       pom.position.y = S * 2.3; gp.add(pom);
     }
-    const mat = (c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.9, flatShading: true });
     // legs
     const legGeo = new THREE.BoxGeometry(S * 0.28, S * 0.8, S * 0.3);
     const legL = new THREE.Mesh(legGeo, mat(pal.pants)); legL.position.set(-S * 0.18, S * 0.4, 0); gp.add(legL);
@@ -1644,14 +1630,14 @@ export class SnowApp {
       fig.visible = true;
       fig.position.set(cp.x, 2.4, cp.y);
       fig.rotation.set(-Math.PI / 2, 0, cp.yaw + Math.PI / 2); // lying face-up
-      // scatter a few snow clumps around the fall
-      for (let i = 0; i < 4; i++) {
-        const clump = new THREE.Mesh(
-          new THREE.SphereGeometry(1.6 + (i % 2), 6, 5),
-          new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1 }),
-        );
-        const a = (i / 4) * Math.PI * 2 + cp.yaw;
+      // scatter snow clumps around the fall (PERF: shared geo/material, 2 per corpse)
+      this._clumpGeo = this._clumpGeo || new THREE.SphereGeometry(2, 6, 5);
+      this._clumpMat = this._clumpMat || new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1 });
+      for (let i = 0; i < 2; i++) {
+        const clump = new THREE.Mesh(this._clumpGeo, this._clumpMat);
+        const a = (i / 2) * Math.PI * 2 + cp.yaw;
         clump.position.set(cp.x + Math.cos(a) * 9, 1, cp.y + Math.sin(a) * 9);
+        clump.matrixAutoUpdate = false; clump.updateMatrix();
         s.add(clump);
       }
     }
@@ -1792,7 +1778,9 @@ export class SnowApp {
     for (const pile of g.piles) {
       const m = this.pileMeshes && this.pileMeshes.get(pile.id);
       if (m) {
-        m.material.color.setHex(pile.cooldownUntil > g.t ? 0xc3cdd6 : 0xffffff);
+        // swap between two shared materials (never mutate a shared color)
+        const want = pile.cooldownUntil > g.t ? this._pileMatCooling : this._pileMatReady;
+        if (m.material !== want) m.material = want;
         m.position.set(pile.x, 0, pile.y);
       }
     }
@@ -2245,81 +2233,144 @@ export class SnowApp {
     this.hud.style.display = 'block';
     const g = this.game, h = this.human;
     if (!g || !h) return; // online: waiting for 'you' assignment
+    // PERF: HUD DOM is built ONCE; per-frame work is cheap text/width diffs,
+    // and the full refresh is throttled to 10Hz (rebuilding the tree every
+    // frame was the main source of stutter).
+    const now2 = performance.now();
+    if (!this._hudEls) this._buildHudDom();
+    const E2 = this._hudEls;
+    if (now2 - (this._hudLastAt || 0) < 100) {
+      // still update the two things that must feel instant: hp bar + toast
+      this._setHudHp(h);
+      this._setHudToast(now2);
+      return;
+    }
+    this._hudLastAt = now2;
     const surv = this.online ? (this._lastSurvivors || g.players.length) : E.aliveCount(g);
     const act = actForSurvivors(surv);
-    const nextShrink = Math.max(0, Math.ceil(g.zone.nextShrink - g.t));
-    this.hud.textContent = '';
-    const top = el('div', 'sr-hud-top');
-    top.appendChild(el('div', 'sr-hud-surv', `생존 ${surv}`));
-    top.appendChild(el('div', 'sr-hud-act', act.title));
-    top.appendChild(el('div', 'sr-hud-zone', `⛈ ${nextShrink}s`));
-    this.hud.appendChild(top);
-
-    const bl = el('div', 'sr-hud-bl');
-    const hpWrap = el('div', 'sr-hp');
-    const maxHp = h.maxHp || 100;
-    const hpFill = el('div', 'sr-hp-fill'); hpFill.style.width = Math.max(0, (h.hp / maxHp) * 100) + '%';
-    hpFill.style.background = h.hp > maxHp * 0.5 ? '#7FFFD4' : h.hp > maxHp * 0.25 ? '#FF6B35' : '#DC143C';
-    hpWrap.appendChild(hpFill); hpWrap.appendChild(el('span', 'sr-hp-txt', `${Math.max(0, Math.round(h.hp))}/${maxHp}`));
-    bl.appendChild(hpWrap);
-    if (h.shieldHits > 0) bl.appendChild(el('div', 'sr-shield', `🛡 방패 내구도 ${h.shieldHits}/${C.items.shieldHits} — 피격 완전 방어`));
-    if (h.mg && h.mg.until > g.t && h.mg.ammo > 0) bl.appendChild(el('div', 'sr-buff sr-buff-mg', `🔥 눈 기관총 ${h.mg.ammo}발 · ${Math.ceil(h.mg.until - g.t)}초`));
+    this._setText(E2.surv, `생존 ${surv}`);
+    this._setText(E2.act, act.title);
+    this._setText(E2.zone, `⛈ ${Math.max(0, Math.ceil(g.zone.nextShrink - g.t))}s`);
+    this._setHudHp(h);
+    this._setText(E2.shield, h.shieldHits > 0 ? `🛡 방패 내구도 ${h.shieldHits}/${C.items.shieldHits} — 피격 완전 방어` : '');
+    const mgOn = h.mg && h.mg.until > g.t && h.mg.ammo > 0;
+    this._setText(E2.mgBuff, mgOn ? `🔥 눈 기관총 ${h.mg.ammo}발 · ${Math.ceil(h.mg.until - g.t)}초` : '');
+    let buffTxt = '';
     if (h.buff && h.buff.until > g.t) {
       const label = h.buff.kind === 'speed' ? '💨 이동속도 증가' : h.buff.kind === 'power' ? '💪 공격력 증가' : '⚒ 제작속도 증가';
-      bl.appendChild(el('div', 'sr-buff', `${label} ${Math.ceil(h.buff.until - g.t)}초`));
+      buffTxt = `${label} ${Math.ceil(h.buff.until - g.t)}초`;
     }
+    this._setText(E2.buff, buffTxt);
     const cls = CLASSES[h.classId];
-    if (cls) bl.appendChild(el('div', 'sr-class-tag', cls.name));
-    if (this.sceneName === 'drop') bl.appendChild(el('div', 'sr-drop', `낙하 중 — 착지 ${Math.max(0, Math.ceil(8 - this.dropT))}s (지도 클릭=낙하 지점)`));
-    this.hud.appendChild(bl);
-
-    const br = el('div', 'sr-hud-br');
-    br.appendChild(el('div', 'sr-ammo-big', `${h.snowballs}`));
-    br.appendChild(el('div', 'sr-ammo-cap', '❄ SNOWBALLS'));
-    br.appendChild(el('div', 'sr-tac', `Q 설벽 ${h.walls}/${C.wall.maxPerPlayer} · G 미끼 ${h.decoys}/${C.decoy.maxPerPlayer} · F ${h.hasClub ? '🏏 몽둥이' : '👊 주먹'}`));
-    br.appendChild(el('div', 'sr-caps', `🍾 ${h.caps || 0}`));
+    this._setText(E2.cls, cls ? cls.name : '');
+    this._setText(E2.drop, this.sceneName === 'drop' ? `낙하 중 — 착지 ${Math.max(0, Math.ceil(this.online ? (this.onlineDropLeft ?? 8) : 8 - this.dropT))}s (지도 클릭=낙하 지점)` : '');
+    this._setText(E2.ammo, `${h.snowballs}`);
+    this._setText(E2.tac, `Q 설벽 ${h.walls}/${C.wall.maxPerPlayer} · G 미끼 ${h.decoys}/${C.decoy.maxPerPlayer} · F ${h.hasClub ? '🏏 몽둥이' : '👊 주먹'}`);
+    this._setText(E2.caps, `🍾 ${h.caps || 0}`);
+    let itemTxt = '';
     if (h.item) {
       const def = C.shop[h.item.id];
-      const label = h.item.id === 'jetpack'
+      itemTxt = h.item.id === 'jetpack'
         ? `${def.emoji} 연료 ${Math.ceil(h.jetFuel)}s (점프키)`
-        : `${def.emoji} ${def.name}${h.item.id === 'hardtack' ? ` ${h.item.usesLeft}회` : ''} — X키`;
-      br.appendChild(el('div', 'sr-item-slot', label));
+        : `${def.emoji} ${def.name}${h.item.usesLeft > 1 ? ` ${h.item.usesLeft}회` : ''} — X키`;
     }
-    if (E.chargeActive(g, h)) br.appendChild(el('div', 'sr-buff sr-buff-mg', `⚗️ 돌격 무적 ${Math.ceil(h.chargeUntil - g.t)}초`));
-    this.hud.appendChild(br);
+    this._setText(E2.item, itemTxt);
+    this._setText(E2.charge, E.chargeActive(g, h) ? `⚗️ 돌격 무적 ${Math.ceil(h.chargeUntil - g.t)}초` : '');
+    // kill feed: diff by joined string
+    this.killFeed = this.killFeed.filter((k) => k.until > now2);
+    const feedKey = this.killFeed.map((k) => k.text).join('|');
+    if (feedKey !== this._feedKey) {
+      this._feedKey = feedKey;
+      E2.feed.textContent = '';
+      for (const k of this.killFeed) E2.feed.appendChild(el('div', 'sr-kf-row', k.text));
+    }
+    this._setHudToast(now2);
+    // minimap: persistent canvas, redrawn at 10Hz only while open
+    const wantMap = this._showMinimap && this.sceneName === 'play';
+    E2.mapBox.style.display = wantMap ? 'block' : 'none';
+    if (wantMap) this._drawMinimap();
+  }
 
-    const feedNow = performance.now();
-    this.killFeed = this.killFeed.filter((k) => k.until > feedNow);
-    if (this.killFeed.length) {
-      const feed = el('div', 'sr-killfeed');
-      for (const k of this.killFeed) feed.appendChild(el('div', 'sr-kf-row', k.text));
-      this.hud.appendChild(feed);
-    }
-    if (this._showMinimap && this.sceneName === 'play') this.hud.appendChild(this._minimapEl());
-    if (this._toastText && performance.now() < this._toastUntil) {
-      this.hud.appendChild(el('div', 'sr-toast', this._toastText));
+  _buildHudDom() {
+    this.hud.textContent = '';
+    const mk = (parent, cls, hideEmpty = true) => { const d = el('div', cls); if (hideEmpty) d.style.display = 'none'; parent.appendChild(d); return d; };
+    const top = el('div', 'sr-hud-top');
+    const surv = el('div', 'sr-hud-surv'); const act = el('div', 'sr-hud-act'); const zone = el('div', 'sr-hud-zone');
+    top.appendChild(surv); top.appendChild(act); top.appendChild(zone);
+    this.hud.appendChild(top);
+    const bl = el('div', 'sr-hud-bl');
+    const hpWrap = el('div', 'sr-hp');
+    const hpFill = el('div', 'sr-hp-fill'); const hpTxt = el('span', 'sr-hp-txt');
+    hpWrap.appendChild(hpFill); hpWrap.appendChild(hpTxt); bl.appendChild(hpWrap);
+    const shield = mk(bl, 'sr-shield'); const mgBuff = mk(bl, 'sr-buff sr-buff-mg'); const buff = mk(bl, 'sr-buff');
+    const cls = mk(bl, 'sr-class-tag'); const drop = mk(bl, 'sr-drop');
+    this.hud.appendChild(bl);
+    const br = el('div', 'sr-hud-br');
+    const ammo = el('div', 'sr-ammo-big'); br.appendChild(ammo);
+    br.appendChild(el('div', 'sr-ammo-cap', '❄ SNOWBALLS'));
+    const tac = el('div', 'sr-tac'); br.appendChild(tac);
+    const caps = el('div', 'sr-caps'); br.appendChild(caps);
+    const item = mk(br, 'sr-item-slot'); const charge = mk(br, 'sr-buff sr-buff-mg');
+    this.hud.appendChild(br);
+    const feed = el('div', 'sr-killfeed'); this.hud.appendChild(feed);
+    const mapBox = el('div', 'sr-minimap'); mapBox.style.display = 'none';
+    const mapCv = document.createElement('canvas'); mapCv.width = 170; mapCv.height = 170; mapBox.appendChild(mapCv);
+    this.hud.appendChild(mapBox);
+    const toast = el('div', 'sr-toast'); toast.style.display = 'none'; this.hud.appendChild(toast);
+    this._hudEls = { surv, act, zone, hpFill, hpTxt, shield, mgBuff, buff, cls, drop, ammo, tac, caps, item, charge, feed, mapBox, mapCv, toast };
+    this._hudCache = {};
+  }
+
+  // set textContent only when changed; empty string hides the element
+  _setText(node, text) {
+    if (node._last === text) return;
+    node._last = text;
+    node.textContent = text;
+    node.style.display = text ? '' : 'none';
+  }
+
+  _setHudHp(h) {
+    const E2 = this._hudEls;
+    const maxHp = h.maxHp || 100;
+    const hp = Math.max(0, Math.round(h.hp));
+    if (E2._hp !== hp || E2._maxHp !== maxHp) {
+      E2._hp = hp; E2._maxHp = maxHp;
+      E2.hpFill.style.width = Math.max(0, (h.hp / maxHp) * 100) + '%';
+      E2.hpFill.style.background = h.hp > maxHp * 0.5 ? '#7FFFD4' : h.hp > maxHp * 0.25 ? '#FF6B35' : '#DC143C';
+      E2.hpTxt.textContent = `${hp}/${maxHp}`;
     }
   }
 
-  _minimapEl() {
-    const g = this.game; const box = el('div', 'sr-minimap');
-    const cv = document.createElement('canvas'); cv.width = 170; cv.height = 170; box.appendChild(cv);
-    const x = cv.getContext('2d'); const sc = 170 / C.map.size;
+  _setHudToast(now2) {
+    const E2 = this._hudEls;
+    const show = this._toastText && now2 < this._toastUntil;
+    if (show) {
+      if (E2.toast._last !== this._toastText) { E2.toast._last = this._toastText; E2.toast.textContent = this._toastText; }
+      if (E2.toast.style.display === 'none') E2.toast.style.display = '';
+    } else if (E2.toast.style.display !== 'none') E2.toast.style.display = 'none';
+  }
+
+  _drawMinimap() {
+    const g = this.game;
+    const x = this._hudEls.mapCv.getContext('2d'); const sc = 170 / C.map.size;
     x.fillStyle = 'rgba(13,27,42,0.88)'; x.fillRect(0, 0, 170, 170);
     x.strokeStyle = '#7fd4ff'; x.lineWidth = 1.5;
     x.beginPath(); x.arc(g.zone.cx * sc, g.zone.cy * sc, g.zone.radius * sc, 0, Math.PI * 2); x.stroke();
-    for (const o of g.obstacles) { x.fillStyle = 'rgba(120,140,160,0.6)'; x.fillRect(o.x * sc - 1, o.y * sc - 1, 3, 3); }
-    for (const pile of g.piles) { if (pile.cooldownUntil <= g.t) { x.fillStyle = '#A8D8EA'; x.fillRect(pile.x * sc - 1, pile.y * sc - 1, 3, 3); } }
+    x.fillStyle = 'rgba(120,140,160,0.6)';
+    for (const o of g.obstacles) x.fillRect(o.x * sc - 1, o.y * sc - 1, 3, 3);
+    x.fillStyle = '#A8D8EA';
+    for (const pile of g.piles) { if (pile.cooldownUntil <= g.t) x.fillRect(pile.x * sc - 1, pile.y * sc - 1, 3, 3); }
+    const h = this.human;
     for (const p of g.players) {
       if (!p.alive) continue;
-      x.fillStyle = p.id === g._humanId ? '#FF6B35' : '#9E9E9E';
-      x.beginPath(); x.arc(p.x * sc, p.y * sc, p.id === g._humanId ? 3.4 : 2, 0, Math.PI * 2); x.fill();
+      x.fillStyle = h && p.id === h.id ? '#FF6B35' : '#9E9E9E';
+      x.beginPath(); x.arc(p.x * sc, p.y * sc, h && p.id === h.id ? 3.4 : 2, 0, Math.PI * 2); x.fill();
     }
-    const h = this.human;
-    x.strokeStyle = 'rgba(255,107,53,0.8)';
-    x.beginPath(); x.moveTo(h.x * sc, h.y * sc);
-    x.lineTo(h.x * sc + Math.cos(this.yaw) * 14, h.y * sc + Math.sin(this.yaw) * 14); x.stroke();
-    return box;
+    if (h) {
+      x.strokeStyle = 'rgba(255,107,53,0.8)';
+      x.beginPath(); x.moveTo(h.x * sc, h.y * sc);
+      x.lineTo(h.x * sc + Math.cos(this.yaw) * 14, h.y * sc + Math.sin(this.yaw) * 14); x.stroke();
+    }
   }
 
   // ---- helpers -------------------------------------------------------------
