@@ -20,15 +20,18 @@ export const CONFIG = {
   },
   // bottle caps: battlefield currency. Pick up scattered caps (2-7 random),
   // dead players drop their wallet where they fell. Spend in the pre-match shop.
-  caps: { spawn: 26, min: 2, max: 7, respawnSec: 40, pickupRange: 26 },
+  // ~100 caps total per match: 22 piles × avg 4.5, NO respawn (finite economy).
+  // Placement rewards (1st/2nd/3rd) add 30/20/10 on top.
+  caps: { spawn: 22, min: 2, max: 7, pickupRange: 26, placeRewards: [30, 20, 10] },
   // shop items — buy with caps, carry exactly ONE into a match
   shop: {
     hardtack: { id: 'hardtack', cost: 10, name: '건빵 패키지', desc: '먹으면 체력 +20, 총 3회 사용', emoji: '🍪', heals: 3, healAmount: 20 },
     charge: { id: 'charge', cost: 40, name: '돌격 물약', desc: '15초 무적 돌격! 박치기로 적을 20m 날려버림', emoji: '⚗️', durationSec: 15, ramRange: 30, knockback: 800, ramDamage: 24, speedMul: 1.6 }, // knockback 800u/s w/ fast decay ≈ 200u (~20m) total
-    sleepgun: { id: 'sleepgun', cost: 40, name: '수면총', desc: '단 한 발 — 맞은 적은 5초간 잠듦', emoji: '🔫', sleepSec: 5, speed: 620, range: 500 },
+    sleepgun: { id: 'sleepgun', cost: 40, name: '수면총', desc: '10발 — 맞은 적은 5초간 잠듦', emoji: '🔫', sleepSec: 5, speed: 620, range: 500, count: 10 },
     jetpack: { id: 'jetpack', cost: 60, name: '올드 제트팩', desc: '점프키를 누르는 동안 비행 (연료 60초, 키 3배 높이)', emoji: '🚀', fuelSec: 60, maxHeightMul: 3, riseVel: 55 },
-    grenade: { id: 'grenade', cost: 30, name: '눈 수류탄', desc: '던지면 반경 표시 후 3초 뒤 폭발 (반경 60, 피해 40)', emoji: '💣', fuseSec: 3, radius: 60, damage: 40, throwRange: 260 },
+    grenade: { id: 'grenade', cost: 30, name: '눈 수류탄 ×5', desc: '5개 묶음! 던지면 반경 표시 후 3초 뒤 폭발 (반경 90, 피해 40)', emoji: '💣', fuseSec: 3, radius: 90, damage: 40, throwRange: 260, count: 5 },
     club: { id: 'club', cost: 20, name: '몽둥이', desc: '근접 공격(F키)이 강해진다 — 주먹 10 → 몽둥이 26 피해', emoji: '🏏' },
+    rocket: { id: 'rocket', cost: 50, name: '폭축 ×5', desc: '전방 25m를 날아가 착탄 즉시 폭발 (반경 70, 피해 45)', emoji: '🧨', count: 5, flyRange: 250, radius: 70, damage: 45, speed: 420 },
   },
   // melee (F key): everyone punches by default; a club hits much harder.
   // Clubs also drop on the battlefield (fieldSpawn) — grab one mid-match.
@@ -58,7 +61,9 @@ export const CONFIG = {
     minChargeMs: 200, maxChargeMs: 1500, minRange: 100, maxRange: 400,
     speed: 320, damage: 14, coverDamageMul: 0.5, radius: 6, hitChanceBase: 0.5,
   },
-  wall: { cost: 4, durability: 3, maxPerPlayer: 2, decaySec: 14, len: 40, dist: 28, blockChance: 0.65 },
+  // Fortnite-style barrier: tall translucent panel that ALWAYS blocks incoming
+  // snowballs while durability lasts — you can see shots slam into it.
+  wall: { cost: 4, durability: 6, maxPerPlayer: 2, decaySec: 20, len: 40, dist: 28, height: 26 },
   decoy: { cost: 5, maxPerPlayer: 2, lureSec: 3, dist: 40 },
   // Zone is the metronome: it must close enough to force endgame within 8-12 min.
   zone: {
@@ -98,6 +103,7 @@ export const SKINS = {
   jack: { name: '아이언 잭', asset: 'char_jack', color: '#1B2A4A' },
   white: { name: '화이트 아이', asset: 'char_white', color: '#A8D8EA' },
   bear: { name: '빅 베어', asset: 'char_bear', color: '#D4A017' },
+  dash: { name: '스노우 러너', asset: 'char_white', color: '#DC143C' },
   bot: { name: '[봇] 그레이 솔저', asset: 'char_bot', color: '#9E9E9E' },
 };
 
@@ -119,7 +125,7 @@ export const CLASSES = {
     throwRangeMul: 0.9, damageMul: 1.0, speedMul: 0.85, craftSecMul: 0.8, maxHpMul: 1.3,
   },
   dash: {
-    id: 'dash', skin: 'white', name: '스노우 러너 — 질주형',
+    id: 'dash', skin: 'dash', name: '스노우 러너 — 질주형',
     desc: '이동 +25%. 대신 피해 -15%.',
     throwRangeMul: 1.0, damageMul: 0.85, speedMul: 1.25, craftSecMul: 1.0, maxHpMul: 1.0,
   },

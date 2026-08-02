@@ -4,14 +4,15 @@
 import { makeRng } from './rng.js';
 import { CONFIG as C, SKINS, CLASSES as CLS, actForSurvivors } from './config.js';
 
-let _uid = 1;
-const uid = () => _uid++;
+// per-game id counter — same seed => identical ids on server AND client,
+// and concurrent server rooms never interfere with each other.
+const uid = (g) => g._uid++;
 
 // ---- construction --------------------------------------------------------
 export function createGame(seed = 42, opts = {}) {
   const rng = makeRng(seed);
   const g = {
-    seed, rng,
+    seed, rng, _uid: 1,
     t: 0,                    // elapsed seconds
     phase: 'drop',           // drop | play | over
     over: false, won: false, winner: null,
@@ -49,19 +50,19 @@ export function createGame(seed = 42, opts = {}) {
 function spawnPickups(g) {
   const m = C.map.size;
   for (let i = 0; i < C.items.healSpawn; i++) {
-    g.pickups.push({ id: uid(), kind: 'heal', x: g.rng.range(80, m - 80), y: g.rng.range(80, m - 80), takenUntil: 0 });
+    g.pickups.push({ id: uid(g), kind: 'heal', x: g.rng.range(80, m - 80), y: g.rng.range(80, m - 80), takenUntil: 0 });
   }
   for (let i = 0; i < C.items.shieldSpawn; i++) {
-    g.pickups.push({ id: uid(), kind: 'shield', x: g.rng.range(80, m - 80), y: g.rng.range(80, m - 80), takenUntil: 0 });
+    g.pickups.push({ id: uid(g), kind: 'shield', x: g.rng.range(80, m - 80), y: g.rng.range(80, m - 80), takenUntil: 0 });
   }
   for (let i = 0; i < C.items.pill.spawn; i++) {
     // buff decided at spawn so the capsule color tells you what it is
-    g.pickups.push({ id: uid(), kind: 'pill', x: g.rng.range(80, m - 80), y: g.rng.range(80, m - 80), takenUntil: 0, buff: null });
+    g.pickups.push({ id: uid(g), kind: 'pill', x: g.rng.range(80, m - 80), y: g.rng.range(80, m - 80), takenUntil: 0, buff: null });
   }
   for (const it of g.pickups) if (it.kind === 'pill') it.buff = rollPillBuff(g);
   // clubs also lie around the battlefield (rare) — melee upgrade on touch
   for (let i = 0; i < C.melee.clubFieldSpawn; i++) {
-    g.pickups.push({ id: uid(), kind: 'club', x: g.rng.range(80, m - 80), y: g.rng.range(80, m - 80), takenUntil: 0 });
+    g.pickups.push({ id: uid(g), kind: 'club', x: g.rng.range(80, m - 80), y: g.rng.range(80, m - 80), takenUntil: 0 });
   }
 }
 
@@ -69,7 +70,7 @@ function spawnPickups(g) {
 function spawnCaps(g) {
   const m = C.map.size;
   for (let i = 0; i < C.caps.spawn; i++) {
-    g.caps.push({ id: uid(), x: g.rng.range(70, m - 70), y: g.rng.range(70, m - 70), amount: Math.floor(g.rng.range(C.caps.min, C.caps.max + 1)), takenUntil: 0, dropped: false });
+    g.caps.push({ id: uid(g), x: g.rng.range(70, m - 70), y: g.rng.range(70, m - 70), amount: Math.floor(g.rng.range(C.caps.min, C.caps.max + 1)), takenUntil: 0, dropped: false });
   }
 }
 
@@ -80,12 +81,7 @@ export function tryPickupCaps(g, p) {
     if (Math.hypot(cp.x - p.x, cp.y - p.y) > C.caps.pickupRange) continue;
     const got = cp.amount;
     p.caps = (p.caps || 0) + got;
-    if (cp.dropped) { cp.gone = true; } // dropped wallets don't respawn
-    else {
-      cp.takenUntil = g.t + C.caps.respawnSec;
-      cp.x = g.rng.range(70, C.map.size - 70); cp.y = g.rng.range(70, C.map.size - 70);
-      cp.amount = Math.floor(g.rng.range(C.caps.min, C.caps.max + 1));
-    }
+    cp.gone = true; // finite economy: ~100 caps per match, no respawns
     g.events.push({ t: g.t, type: 'caps', id: p.id, amount: got });
     return got;
   }
@@ -97,7 +93,7 @@ export function equipItem(g, p, itemId) {
   if (!p || !C.shop[itemId]) return false;
   if (itemId === 'club') { p.hasClub = true; return true; } // passive melee upgrade
   const def = C.shop[itemId];
-  p.item = { id: itemId, usesLeft: itemId === 'hardtack' ? def.heals : 1 };
+  p.item = { id: itemId, usesLeft: def.heals || def.count || 1 }; // hardtack 3 bites, grenade 5-pack
   if (itemId === 'jetpack') p.jetFuel = def.fuelSec;
   return true;
 }
@@ -153,30 +149,50 @@ export function useItem(g, p, aim = p.aim) {
   }
   if (p.item.id === 'sleepgun') {
     const sb = {
-      id: uid(), ownerId: p.id, isNpc: p.isNpc,
+      id: uid(g), ownerId: p.id, isNpc: p.isNpc,
       x: p.x, y: p.y, dirX: Math.cos(aim), dirY: Math.sin(aim),
       traveled: 0, range: def.range, speed: def.speed, dead: false,
       dmgMul: 0, sleep: def.sleepSec, flat: true, high: p.z >= C.towers.height - 2,
     };
     g.snowballs.push(sb);
-    p.item.usesLeft = 0; p.item = null;
-    g.events.push({ t: g.t, type: 'item', id: p.id, item: 'sleepgun' });
-    return { used: 'sleepgun', sb };
+    p.item.usesLeft--; // 10 darts
+    g.events.push({ t: g.t, type: 'item', id: p.id, item: 'sleepgun', left: p.item.usesLeft });
+    if (p.item.usesLeft <= 0) p.item = null;
+    return { used: 'sleepgun', sb, left: p.item ? p.item.usesLeft : 0 };
   }
   if (p.item.id === 'grenade') {
     const dist = Math.min(def.throwRange, 260);
     const lx = p.x + Math.cos(aim) * dist, ly = p.y + Math.sin(aim) * dist;
     const flight = 0.9; // arc time to land
     g.grenades.push({
-      id: uid(), ownerId: p.id,
+      id: uid(g), ownerId: p.id,
       sx: p.x, sy: p.y, x: p.x, y: p.y, z: EYEZ,
       lx: Math.max(0, Math.min(C.map.size, lx)), ly: Math.max(0, Math.min(C.map.size, ly)),
       landAt: g.t + flight, explodeAt: g.t + flight + def.fuseSec,
       radius: def.radius, damage: def.damage, thrownAt: g.t,
     });
-    p.item.usesLeft = 0; p.item = null;
-    g.events.push({ t: g.t, type: 'item', id: p.id, item: 'grenade' });
-    return { used: 'grenade' };
+    p.item.usesLeft--; // 5-pack
+    g.events.push({ t: g.t, type: 'item', id: p.id, item: 'grenade', left: p.item.usesLeft });
+    if (p.item.usesLeft <= 0) p.item = null;
+    return { used: 'grenade', left: p.item ? p.item.usesLeft : 0 };
+  }
+  if (p.item.id === 'rocket') {
+    // 폭축: flies straight ahead ~25m and detonates ON impact/arrival
+    const def2 = C.shop.rocket;
+    const dist = def2.flyRange;
+    const flight = dist / def2.speed;
+    g.grenades.push({
+      id: uid(g), ownerId: p.id, rocket: true,
+      sx: p.x, sy: p.y, x: p.x, y: p.y, z: EYEZ,
+      lx: Math.max(0, Math.min(C.map.size, p.x + Math.cos(aim) * dist)),
+      ly: Math.max(0, Math.min(C.map.size, p.y + Math.sin(aim) * dist)),
+      landAt: g.t + flight, explodeAt: g.t + flight, // boom on arrival, no fuse
+      radius: def2.radius, damage: def2.damage, thrownAt: g.t, flightSec: flight,
+    });
+    p.item.usesLeft--;
+    g.events.push({ t: g.t, type: 'item', id: p.id, item: 'rocket', left: p.item.usesLeft });
+    if (p.item.usesLeft <= 0) p.item = null;
+    return { used: 'rocket', left: p.item ? p.item.usesLeft : 0 };
   }
   // jetpack has no discrete "use" — it binds to the jump key (see jump/step)
   return null;
@@ -189,13 +205,13 @@ export function chargeActive(g, p) { return p.chargeUntil != null && p.chargeUnt
 // step on one → big vertical launch that carries your run direction.
 function spawnPads(g) {
   const m = C.map.size;
-  g.pads = C.pads.spots.map(([fx, fy]) => ({ id: uid(), x: fx * m, y: fy * m, r: C.pads.radius }));
+  g.pads = C.pads.spots.map(([fx, fy]) => ({ id: uid(g), x: fx * m, y: fy * m, r: C.pads.radius }));
 }
 
 // One-story rock towers at FIXED spots, paired with adjacent pads for access.
 function spawnTowers(g) {
   const m = C.map.size;
-  g.towers = C.towers.spots.map(([fx, fy]) => ({ id: uid(), x: fx * m, y: fy * m, r: C.towers.radius, h: C.towers.height }));
+  g.towers = C.towers.spots.map(([fx, fy]) => ({ id: uid(g), x: fx * m, y: fy * m, r: C.towers.radius, h: C.towers.height }));
 }
 
 // Height of the walkable ground at (x,y): tower tops are elevated terrain.
@@ -239,7 +255,7 @@ export function fireMachineGun(g, p, aim) {
   p.mg.ammo--;
   p.mg.fireCd = P.mgFireInterval;
   const sb = {
-    id: uid(), ownerId: p.id, isNpc: p.isNpc,
+    id: uid(g), ownerId: p.id, isNpc: p.isNpc,
     x: p.x, y: p.y, dirX: Math.cos(aim), dirY: Math.sin(aim),
     traveled: 0, range: C.throw.maxRange * 1.1, speed: P.mgSpeed, dead: false,
     dmgMul: (p.mods && p.mods.damage) || 1, flat: true, // flat = straight line, no arc
@@ -319,7 +335,7 @@ function spawnObstacles(g) {
   for (const k of kinds) {
     for (let i = 0; i < k.n; i++) {
       g.obstacles.push({
-        id: uid(), kind: k.kind,
+        id: uid(g), kind: k.kind,
         x: g.rng.range(70, m - 70), y: g.rng.range(70, m - 70),
         r: g.rng.range(k.rMin, k.rMax),
         yaw: g.rng.range(0, Math.PI * 2),
@@ -331,7 +347,7 @@ function spawnObstacles(g) {
 function spawnPiles(g) {
   const m = C.map.size;
   for (let i = 0; i < C.map.snowPiles; i++) {
-    g.piles.push({ id: uid(), x: g.rng.range(60, m - 60), y: g.rng.range(60, m - 60), cooldownUntil: 0 });
+    g.piles.push({ id: uid(g), x: g.rng.range(60, m - 60), y: g.rng.range(60, m - 60), cooldownUntil: 0 });
   }
 }
 
@@ -347,7 +363,7 @@ function spawnPlayers(g, opts) {
   for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) order.push([c, r]);
   for (let i = 0; i < total; i++) {
     const isHuman = !opts.allNpc && i === 0;
-    const id = g._humanId != null && isHuman ? g._humanId : uid();
+    const id = g._humanId != null && isHuman ? g._humanId : uid(g);
     const [gc, gr] = order[i % order.length];
     const p = {
       id, isHuman, isNpc: !isHuman,
@@ -420,7 +436,7 @@ function eliminate(g, p) {
   p.alive = false; p.crafting = false;
   // drop the wallet where they fell (never respawns; first-come-first-served)
   if (p.caps > 0) {
-    g.caps.push({ id: uid(), x: p.x, y: p.y, amount: p.caps, takenUntil: 0, dropped: true });
+    g.caps.push({ id: uid(g), x: p.x, y: p.y, amount: p.caps, takenUntil: 0, dropped: true });
     p.caps = 0;
   }
   g.placementOrder.push(p.id);
@@ -441,6 +457,14 @@ function checkWin(g) {
     if (g.winner) g.placementOrder.push(g.winner.id);
     const human = humanPlayer(g);
     g.won = !!(g.winner && human && g.winner.id === human.id);
+    // placement rewards: 1st/2nd/3rd get bonus caps (banked by client/server)
+    const order = g.placementOrder;
+    (C.caps.placeRewards || []).forEach((amount, i) => {
+      const id = order[order.length - 1 - i];
+      if (id == null) return;
+      const p = g.players.find((pl) => pl.id === id);
+      if (p) { p.caps = (p.caps || 0) + amount; g.events.push({ t: g.t, type: 'placeReward', id, place: i + 1, amount }); }
+    });
     g.events.push({ t: g.t, type: 'gameover', winnerId: g.winner ? g.winner.id : null, humanWon: g.won });
   }
 }
@@ -489,7 +513,7 @@ export function throwSnowball(g, p, aim, charge01) {
   addSnowballs(p, -1);
   const range = (C.throw.minRange + (C.throw.maxRange - C.throw.minRange) * Math.max(0, Math.min(1, charge01))) * ((p.mods && p.mods.throwRange) || 1);
   const sb = {
-    id: uid(), ownerId: p.id, isNpc: p.isNpc,
+    id: uid(g), ownerId: p.id, isNpc: p.isNpc,
     x: p.x, y: p.y, dirX: Math.cos(aim), dirY: Math.sin(aim),
     traveled: 0, range, speed: C.throw.speed, dead: false,
     dmgMul: ((p.mods && p.mods.damage) || 1) * buffMul(g, p, 'power'),
@@ -516,7 +540,7 @@ export function buildWall(g, p) {
   addSnowballs(p, -C.wall.cost);
   const wx = p.x + Math.cos(p.aim) * C.wall.dist;
   const wy = p.y + Math.sin(p.aim) * C.wall.dist;
-  const wall = { id: uid(), ownerId: p.id, x: wx, y: wy, angle: p.aim + Math.PI / 2, hp: C.wall.durability, decayAt: g.t + C.wall.decaySec };
+  const wall = { id: uid(g), ownerId: p.id, x: wx, y: wy, angle: p.aim + Math.PI / 2, hp: C.wall.durability, decayAt: g.t + C.wall.decaySec };
   g.walls.push(wall); p.walls++;
   g.stats.wallsBuilt++;
   g.events.push({ t: g.t, type: 'wall', id: p.id });
@@ -528,7 +552,7 @@ export function placeDecoy(g, p) {
   addSnowballs(p, -C.decoy.cost);
   const dx = p.x + Math.cos(p.aim) * C.decoy.dist;
   const dy = p.y + Math.sin(p.aim) * C.decoy.dist;
-  const decoy = { id: uid(), ownerId: p.id, x: dx, y: dy, until: g.t + C.decoy.lureSec, alive: true };
+  const decoy = { id: uid(g), ownerId: p.id, x: dx, y: dy, until: g.t + C.decoy.lureSec, alive: true };
   g.decoys.push(decoy); p.decoys++;
   g.stats.decoys++;
   g.events.push({ t: g.t, type: 'decoy', id: p.id });
@@ -685,11 +709,20 @@ export function step(g, dt) {
   for (const gr of g.grenades) {
     if (gr.exploded) continue;
     if (g.t < gr.landAt) {
-      const ft = 1 - (gr.landAt - g.t) / 0.9;
+      const dur = gr.flightSec || 0.9;
+      const ft = 1 - (gr.landAt - g.t) / dur;
       gr.x = gr.sx + (gr.lx - gr.sx) * ft;
       gr.y = gr.sy + (gr.ly - gr.sy) * ft;
-      gr.z = 14 + Math.sin(ft * Math.PI) * 40;
-    } else { gr.x = gr.lx; gr.y = gr.ly; gr.z = 0; }
+      // rocket flies flat at chest height; grenade arcs
+      gr.z = gr.rocket ? 14 : 14 + Math.sin(ft * Math.PI) * 40;
+      // rocket detonates early on any body contact
+      if (gr.rocket) {
+        for (const p of g.players) {
+          if (!p.alive || p.id === gr.ownerId) continue;
+          if (Math.hypot(p.x - gr.x, p.y - gr.y) < C.player.radius + 8) { gr.lx = gr.x; gr.ly = gr.y; gr.explodeAt = g.t; gr.landAt = g.t; break; }
+        }
+      }
+    } else { gr.x = gr.lx; gr.y = gr.ly; gr.z = gr.rocket ? 6 : 0; }
     if (g.t >= gr.explodeAt) {
       gr.exploded = true;
       for (const p of g.players) {
@@ -710,13 +743,16 @@ export function step(g, dt) {
     if (sb.dead) continue;
     const stepDist = sb.speed * dt;
     const nx = sb.x + sb.dirX * stepDist, ny = sb.y + sb.dirY * stepDist;
-    // wall collision — a low (1.2m) wall blocks most but not all shots; a
-    // fraction arc over it, so pure turtling can still be punished.
+    // wall collision — Fortnite-style barrier: ALWAYS eats the shot while
+    // durability lasts. Impacts are logged so the renderer can splat them.
     let blocked = false;
     for (const w of g.walls) {
       if (w.ownerId === sb.ownerId) continue;
       if (wallBlocks(w, sb.x, sb.y, nx, ny)) {
-        if (g.rng() < C.wall.blockChance) { w.hp--; blocked = true; if (w.hp <= 0) w.dead = true; }
+        w.hp--; blocked = true;
+        w.lastHitAt = g.t;
+        g.events.push({ t: g.t, type: 'wallHit', wallId: w.id, x: nx, y: ny, hpLeft: w.hp });
+        if (w.hp <= 0) { w.dead = true; g.events.push({ t: g.t, type: 'wallBreak', wallId: w.id }); }
         break;
       }
     }

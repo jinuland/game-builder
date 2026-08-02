@@ -102,9 +102,13 @@ function publicRooms() {
 }
 
 // ---- match lifecycle ----------------------------------------------------------
+const DROP_SEC = 8;
+
 function startMatch(room) {
   if (room.state !== 'lobby' || room.members.size === 0) return;
   room.state = 'playing';
+  room.phase = 'drop';
+  room.dropDeadline = Date.now() + DROP_SEC * 1000;
   const humans = [...room.members.values()];
   const total = Math.max(C.match.total, humans.length);
   // humanId -1: engine treats nobody as "the" human — all humans are explicit
@@ -145,6 +149,22 @@ function startMatch(room) {
 function tickRoom(room, dt) {
   const g = room.game;
   if (!g || g.over) { finishMatch(room); return; }
+  // drop phase: world frozen, humans pick landing spots on the map
+  if (room.phase === 'drop') {
+    const left = (room.dropDeadline - Date.now()) / 1000;
+    for (const m of room.members.values()) {
+      if (m.playerId == null) continue;
+      const p = g.players.find((pl) => pl.id === m.playerId);
+      if (p && m.input.dropX != null) {
+        p.x = Math.max(0, Math.min(C.map.size, m.input.dropX));
+        p.y = Math.max(0, Math.min(C.map.size, m.input.dropY));
+      }
+    }
+    room.tick++;
+    if (room.tick % 4 === 0) broadcast(room, { type: 'drop_tick', left: Math.max(0, Math.round(left * 10) / 10) });
+    if (left <= 0) { room.phase = 'play'; broadcast(room, { type: 'play_begin' }); }
+    return;
+  }
   // apply queued human inputs
   for (const m of room.members.values()) {
     if (m.ghost || m.playerId == null) continue;
@@ -206,7 +226,7 @@ function snapshot(room) {
     corpses: g.corpses.length,
     pickups: g.pickups.map((it) => [it.id, it.takenUntil > g.t ? 1 : 0, Math.round(it.x), Math.round(it.y), it.kind === 'pill' && it.buff ? it.buff.kind : 0]),
     piles: g.piles.map((pl) => [pl.id, pl.cooldownUntil > g.t ? 1 : 0, Math.round(pl.x), Math.round(pl.y)]),
-    events: g.events.splice(0).filter((e) => ['kill', 'eliminate', 'zoneShrink', 'pad', 'pill', 'shieldBlock'].includes(e.type)),
+    events: g.events.splice(0).filter((e) => ['kill', 'eliminate', 'zoneShrink', 'pad', 'pill', 'shieldBlock', 'placeReward', 'wallHit', 'wallBreak', 'sleep', 'ram', 'boom', 'swing', 'caps'].includes(e.type)),
     alive: E.aliveCount(g),
   };
 }
@@ -278,20 +298,45 @@ wss.on('connection', (ws) => {
       else if (msg.type === 'join_room') {
         room = rooms.get(String(msg.code || '').toUpperCase());
         if (!room) { send({ type: 'error', error: '방을 찾을 수 없습니다' }); return; }
-        if (room.state !== 'lobby') { send({ type: 'error', error: '이미 게임이 진행 중입니다' }); return; }
-        if (room.members.size >= MAX_HUMANS) { send({ type: 'error', error: '방이 가득 찼습니다' }); return; }
+        // reload-rejoin: same uid can re-attach to a running match
+        const existing = room.members.get(uid);
+        if (room.state !== 'lobby' && !existing) { send({ type: 'error', error: '이미 게임이 진행 중입니다' }); return; }
+        if (!existing && room.members.size >= MAX_HUMANS) { send({ type: 'error', error: '방이 가득 찼습니다' }); return; }
       } else { // quick_join
         room = [...rooms.values()].find((r) => r.isPublic && r.state === 'lobby' && r.members.size < MAX_HUMANS)
           || createRoom({ isPublic: true, hostName: name });
       }
-      // replace stale connection with same uid
+      // replace stale connection with same uid (reload-rejoin keeps player state)
       const old = room.members.get(uid);
-      if (old && old.ws && old.ws !== ws && old.ws.readyState === 1) old.ws.close();
-      member = { room, uid, name, classId: msg.classId || 'jack', itemId: msg.itemId && C.shop[msg.itemId] ? msg.itemId : null, ready: false, ws, playerId: null, ghost: false, input: { mvx: 0, mvy: 0, aim: 0 } };
-      room.members.set(uid, member);
+      if (old) {
+        if (old.ws && old.ws !== ws && old.ws.readyState === 1) { const dead = old.ws; old.ws = null; dead.close(); }
+        old.ws = ws; old.disconnectedAt = null;
+        member = old;
+      } else {
+        member = { room, uid, name, classId: msg.classId || 'jack', itemId: msg.itemId && C.shop[msg.itemId] ? msg.itemId : null, ready: false, ws, playerId: null, ghost: false, input: { mvx: 0, mvy: 0, aim: 0 } };
+        room.members.set(uid, member);
+      }
       if (!room.hostUid) { room.hostUid = uid; room.hostName = name; }
       send({ type: 'joined', code: room.code, isPublic: room.isPublic });
-      broadcast(room, lobbyInfo(room));
+      // rejoining a live match: replay match context so the client can rebuild
+      if (room.state === 'playing' && member.playerId != null && room.game) {
+        const g = room.game;
+        // their body may have been botified while away — reclaim it
+        const p = g.players.find((pl) => pl.id === member.playerId);
+        if (p && p.alive && p.isNpc) { p.isNpc = false; p.isHuman = true; p.npc = null; }
+        send({
+          type: 'match_start', rejoin: true, seed: room.seed, total: g.players.length,
+          players: g.players.map((pl) => ({ id: pl.id, name: pl.name, isNpc: pl.isNpc, skin: pl.skin, userSkin: !!pl.userSkin, classId: pl.classId || null })),
+        });
+        send({ type: 'you', playerId: member.playerId });
+        if (member.ghost && p && !p.alive) {
+          const place = g.players.length - g.placementOrder.indexOf(p.id);
+          send({ type: 'you_died', place, total: g.players.length, kills: g.kills[p.id] || 0, rejoin: true });
+        }
+        if (room.phase === 'play') send({ type: 'play_begin' });
+      } else {
+        broadcast(room, lobbyInfo(room));
+      }
       return;
     }
 
@@ -310,6 +355,7 @@ wss.on('connection', (ws) => {
       const i = member.input;
       i.mvx = clampNum(msg.mvx, -1, 1); i.mvy = clampNum(msg.mvy, -1, 1);
       i.aim = clampNum(msg.aim, -10, 10); i.cover = !!msg.cover;
+      if (msg.dropX != null) { i.dropX = clampNum(msg.dropX, 0, 10000); i.dropY = clampNum(msg.dropY, 0, 10000); }
       if (msg.jump) i.jump = true;
       if (msg.craft) i.craft = true;
       if (msg.wall) i.wall = true;
@@ -321,23 +367,33 @@ wss.on('connection', (ws) => {
       i.mg = !!msg.mg;
       return;
     }
-    if (msg.type === 'leave') { leave(); return; }
+    if (msg.type === 'leave') { leave(true); return; }
   });
 
-  function leave() {
+  function leave(explicit = false) {
     if (!member) return;
     const room = member.room;
+    // during a live match, a dropped socket gets a 60s grace window to rejoin
+    // (page reloads keep your body alive as a bot until you come back)
+    if (!explicit && room.state === 'playing' && member.playerId != null && room.game) {
+      member.ws = null;
+      member.disconnectedAt = Date.now();
+      const p = room.game.players.find((pl) => pl.id === member.playerId);
+      if (p && p.alive) { p.isNpc = true; p.isHuman = false; p.npc = { state: 'PATROL', target: null, reactTimer: 0, moveTx: 0, moveTy: 0 }; }
+      member = null;
+      return;
+    }
     room.members.delete(member.uid);
-    // playing: their body becomes a bot so the match stays fair
     if (room.state === 'playing' && member.playerId != null && room.game) {
       const p = room.game.players.find((pl) => pl.id === member.playerId);
       if (p && p.alive) { p.isNpc = true; p.isHuman = false; p.npc = { state: 'PATROL', target: null, reactTimer: 0, moveTx: 0, moveTy: 0 }; }
     }
-    if (room.members.size === 0) { stopMatch(room); rooms.delete(room.code); console.log(`[room ${room.code}] deleted (empty)`); }
-    else {
+    const anyLive = [...room.members.values()].some((m) => m.ws);
+    if (!anyLive && room.state !== 'playing') { stopMatch(room); rooms.delete(room.code); console.log(`[room ${room.code}] deleted (empty)`); }
+    else if (room.members.size) {
       if (room.hostUid === member.uid) { const next = room.members.values().next().value; room.hostUid = next.uid; room.hostName = next.name; }
       broadcast(room, lobbyInfo(room));
-    }
+    } else { stopMatch(room); rooms.delete(room.code); }
     member = null;
   }
 
@@ -346,20 +402,26 @@ wss.on('connection', (ws) => {
     if (room.state === 'lobby' && room.members.size >= 2 && [...room.members.values()].every((m) => m.ready)) startMatch(room);
   }
 
-  ws.on('close', leave);
+  // NOTE: wrap — ws 'close' passes (code, reason); leave(1006) must not read as explicit
+  ws.on('close', () => leave(false));
   ws.on('error', () => {});
 });
 
 function clampNum(v, lo, hi) { const n = Number(v); return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : 0; }
 
-// lobby GC
+// GC: stale lobbies + disconnected members past their 60s rejoin window
 setInterval(() => {
   const now = Date.now();
   for (const [code, room] of rooms) {
     if (room.state === 'lobby' && now - room.createdAt > LOBBY_TIMEOUT_MS && room.members.size === 0) {
       rooms.delete(code);
+      continue;
     }
+    for (const [uid, m] of room.members) {
+      if (!m.ws && m.disconnectedAt && now - m.disconnectedAt > 60_000) room.members.delete(uid);
+    }
+    if (room.members.size === 0 && room.state === 'playing') { stopMatch(room); rooms.delete(code); console.log(`[room ${code}] deleted (all left)`); }
   }
-}, 60_000);
+}, 15_000);
 
 http.listen(PORT, () => console.log(`[snow-server] ws://0.0.0.0:${PORT}/ws (tick ${TICK_HZ}Hz)`));

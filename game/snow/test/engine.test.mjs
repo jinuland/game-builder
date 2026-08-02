@@ -570,21 +570,26 @@ test('TC-043 high ground: tower blocks ground throws, top-of-tower throws sail o
 
 import { tryPickupCaps, equipItem, useItem, chargeActive } from '../src/engine.js';
 
-test('TC-044 caps: spawn, pickup 2-7, death drops wallet, dropped piles never respawn', () => {
+test('TC-044 caps: finite economy (~100 total), pickup once, death drops wallet', () => {
   const g = createGame(1, { total: 2 });
   assert.equal(g.caps.length, C.caps.spawn);
+  const totalCaps = g.caps.reduce((a, c) => a + c.amount, 0);
+  assert.ok(totalCaps >= 70 && totalCaps <= 140, `~100 caps on map (got ${totalCaps})`);
   const p = human(g);
   g.caps = [{ id: 1, x: p.x, y: p.y, amount: 5, takenUntil: 0, dropped: false }];
   const got = tryPickupCaps(g, p);
-  assert.ok(got >= 2 || got === 5, `got ${got}`);
+  assert.equal(got, 5);
   assert.equal(p.caps, got);
+  assert.ok(g.caps[0].gone, 'field pile consumed forever (no respawn)');
   // death drop
   const other = g.players[1];
   other.caps = 12; other.x = 300; other.y = 300;
   setHp(g, other, 0);
   const wallet = g.caps.find((c) => c.dropped && c.amount === 12);
   assert.ok(wallet, 'wallet dropped where they fell');
-  assert.equal(other.caps, 0);
+  // death empties the wallet; the 2-player match then ends and 2nd-place
+  // reward (+20) is banked separately for the dead player
+  assert.equal(other.caps, C.caps.placeRewards[1]);
   // picking up a dropped wallet removes it permanently
   p.x = wallet.x; p.y = wallet.y;
   const got2 = tryPickupCaps(g, p);
@@ -626,7 +631,7 @@ test('TC-046 charge potion: invincible 15s, ram knocks enemies flying ~20m', () 
   assert.ok(!chargeActive(g, p));
 });
 
-test('TC-047 sleep gun: one dart, victim sleeps 5s (no move, no AI), no damage', () => {
+test('TC-047 sleep gun: 10 darts, victim sleeps 5s (no move, no AI), no damage', () => {
   const g = createGame(1, { total: 2 });
   const p = human(g), o = g.players[1];
   p.x = 400; p.y = 400; o.x = 520; o.y = 400; o.hp = 100; o.z = 0;
@@ -634,7 +639,7 @@ test('TC-047 sleep gun: one dart, victim sleeps 5s (no move, no AI), no damage',
   equipItem(g, p, 'sleepgun');
   const r = useItem(g, p, 0); // aim east
   assert.equal(r.used, 'sleepgun');
-  assert.equal(p.item, null, 'single shot');
+  assert.equal(p.item.usesLeft, C.shop.sleepgun.count - 1, '10-dart magazine');
   for (let i = 0; i < 60 && g.snowballs.length; i++) step(g, 1 / 60);
   assert.ok(o.sleepUntil > g.t, 'target asleep');
   assert.equal(o.hp, 100, 'dart does no damage');

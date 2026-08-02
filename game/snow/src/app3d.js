@@ -26,6 +26,7 @@ const PALETTES = {
   jack: { jacket: 0x1b2a4a, pants: 0x2c3550, head: 0xe8b89a, accent: 0xff6b35 },
   white: { jacket: 0xe8eef4, pants: 0xd7e2ec, head: 0xf0c6a8, accent: 0xa8d8ea },
   bear: { jacket: 0x5b4326, pants: 0x3e3020, head: 0xd9a97f, accent: 0xd4a017 },
+  dash: { jacket: 0xdc143c, pants: 0xb01030, head: 0xf0c6a8, accent: 0xffd43b, boots: 0xffd43b }, // red body, yellow shoes
   bot: { jacket: 0x8b8f96, pants: 0x74777d, head: 0xa7abb2, accent: 0x5f636a },
 };
 
@@ -52,7 +53,16 @@ export class SnowApp {
     this.wallMeshes = new Map();
     this.decoyMeshes = new Map();
     this._build();
-    if (autoStart) this._showTitle();
+    if (autoStart) {
+      this._showTitle();
+      // reload during an online match? auto-rejoin the room (60s server grace)
+      let savedRoom = null;
+      try { savedRoom = sessionStorage.getItem('snow_room'); } catch { /* */ }
+      if (savedRoom) {
+        this._mode = 'online';
+        this._joinOnline({ code: savedRoom }).catch(() => { try { sessionStorage.removeItem('snow_room'); } catch { /* */ } });
+      }
+    }
   }
 
   // alias for older callers
@@ -344,6 +354,26 @@ export class SnowApp {
     }
   }
 
+  // explosion burst: white snow chunks flying outward
+  _spawnBoomFx(x, y, radius) {
+    this._boomFx = this._boomFx || [];
+    const grp = new THREE.Group();
+    const speeds = [];
+    for (let i = 0; i < 26; i++) {
+      const chunk = new THREE.Mesh(
+        new THREE.SphereGeometry(1.6 + Math.random() * 3.2, 6, 5),
+        new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.95 }),
+      );
+      chunk.position.set(x, 4, y);
+      grp.add(chunk);
+      const a = Math.random() * Math.PI * 2;
+      const v = 30 + Math.random() * radius * 1.4;
+      speeds.push({ x: Math.cos(a) * v, y: 40 + Math.random() * 60, z: Math.sin(a) * v });
+    }
+    this.scene3.add(grp);
+    this._boomFx.push({ grp, speeds, at: performance.now() });
+  }
+
   // bottle-cap pile: stack of glinting gold discs (bigger pile = more caps)
   _makeCapMesh(cp) {
     const grp = new THREE.Group();
@@ -468,6 +498,12 @@ export class SnowApp {
     const legGeo = new THREE.BoxGeometry(S * 0.28, S * 0.8, S * 0.3);
     const legL = new THREE.Mesh(legGeo, mat(pal.pants)); legL.position.set(-S * 0.18, S * 0.4, 0); gp.add(legL);
     const legR = new THREE.Mesh(legGeo, mat(pal.pants)); legR.position.set(S * 0.18, S * 0.4, 0); gp.add(legR);
+    // boots (e.g. Snow Runner's yellow shoes)
+    if (pal.boots) {
+      const bootGeo = new THREE.BoxGeometry(S * 0.32, S * 0.18, S * 0.4);
+      const bootL = new THREE.Mesh(bootGeo, mat(pal.boots)); bootL.position.set(-S * 0.18, S * 0.09, S * 0.04); gp.add(bootL);
+      const bootR = new THREE.Mesh(bootGeo, mat(pal.boots)); bootR.position.set(S * 0.18, S * 0.09, S * 0.04); gp.add(bootR);
+    }
     // torso (puffy jacket)
     const torso = new THREE.Mesh(new THREE.BoxGeometry(S * 0.85, S * 0.9, S * 0.5), mat(pal.jacket));
     torso.position.y = S * 1.25; gp.add(torso);
@@ -720,11 +756,14 @@ export class SnowApp {
     if (this.net && this.net.connected) return this.net;
     this.net = new NetClient();
     this.net
+      .on('joined', (m) => { try { sessionStorage.setItem('snow_room', m.code); } catch { /* */ } })
       .on('lobby', (m) => this._renderRoomLobby(m))
       .on('rooms', (m) => this._renderRoomList(m.rooms))
-      .on('error', (m) => this._toast(`⚠ ${m.error}`))
-      .on('you', (m) => { this.onlineYouId = m.playerId; })
+      .on('error', (m) => { this._toast(`⚠ ${m.error}`); if (/방을 찾을 수 없습니다|진행 중/.test(m.error)) { try { sessionStorage.removeItem('snow_room'); } catch { /* */ } } })
+      .on('you', (m) => { this.onlineYouId = m.playerId; this._applyYou(); })
       .on('match_start', (m) => this._onlineMatchStart(m))
+      .on('drop_tick', (m) => { this.onlineDropLeft = m.left; })
+      .on('play_begin', (m) => this._onlinePlayBegin(m))
       .on('snap', (m) => this._onlineSnap(m))
       .on('you_died', (m) => this._onlineDied(m))
       .on('caps_got', (m) => {
@@ -806,7 +845,7 @@ export class SnowApp {
     const readyB = this._btn(me && me.ready ? '준비 취소' : '✅ 준비', () => this.net.send({ type: 'ready', ready: !(me && me.ready) }));
     c.appendChild(readyB);
     if (m.hostUid === this.net.uid) c.appendChild(this._btn('🚀 게임 시작 (방장)', () => this.net.send({ type: 'start' }), true));
-    c.appendChild(this._btn('나가기', () => { this.net.send({ type: 'leave' }); this._showTitle(); }));
+    c.appendChild(this._btn('나가기', () => { this.net.send({ type: 'leave' }); try { sessionStorage.removeItem('snow_room'); } catch { /* */ }; this._showTitle(); }));
     this.overlay.innerHTML = ''; this.overlay.appendChild(c); this.overlay.style.display = 'flex';
   }
 
@@ -881,14 +920,36 @@ export class SnowApp {
     this.human = null; // assigned when 'you' arrives (may already be set)
     this._applyYou();
     this._buildWorld();
-    this.sceneName = 'play';
     this.ghost = false;
     this.killFeed = [];
     this.overlay.style.display = 'none'; this.overlay.innerHTML = '';
     this.hud.style.display = 'block';
     this.yaw = 0; this.pitch = 0;
     this._lastSurvivors = m.total;
-    this._toast('🌐 온라인 매치 시작 — 화면을 클릭해 조준을 잠그세요');
+    if (m.rejoin) {
+      // reload-rejoin: straight into the live match
+      this.sceneName = 'play';
+      this._toast('🔄 매치에 다시 접속했습니다 — 화면을 클릭해 조준을 잠그세요', 4000);
+    } else {
+      // shared drop phase: aerial flyover + map click to pick a landing spot
+      this.sceneName = 'drop';
+      this.dropT = 0;
+      this.onlineDropLeft = 8;
+      this.dropTarget = { x: this.game.zone.cx, y: this.game.zone.cy };
+      this.dropPlan = new Map();
+      for (const p of this.game.players) {
+        if (this.human && p.id === this.human.id) continue;
+        this.dropPlan.set(p.id, { delay: this.game.rng.range(0, 2.5), fallSec: this.game.rng.range(3.2, 4.6), sway: this.game.rng.range(0, Math.PI * 2) });
+      }
+      this._toast('🌐 온라인 매치 — 지도를 클릭해 낙하 지점을 고르세요');
+    }
+  }
+
+  _onlinePlayBegin() {
+    if (!this.online) return;
+    this.sceneName = 'play';
+    this.audio.landing();
+    this._toast('착지! 화면을 클릭해 조준을 잠그세요');
   }
 
   _applyYou() {
@@ -989,6 +1050,15 @@ export class SnowApp {
       }
       if (e.type === 'zoneShrink') { this.audio.zoneWarn(); this._toast('⚠ 눈보라 구역이 좁아집니다!'); }
       if (e.type === 'pad' && this.human && e.id === this.human.id) this._toast('🌀 스프링 점프!', 1200);
+      if (e.type === 'placeReward' && this.human && e.id === this.human.id) {
+        this._bankCaps(e.amount);
+        this.capsFxUntil = performance.now() + 2000; this.capsFxAmount = e.amount;
+        this._toast(`🏅 ${e.place}등 보상 — 병뚜껑 +${e.amount}!`, 4500);
+      }
+      if (e.type === 'swing' && (!this.human || e.id !== this.human.id)) {
+        const fig = this.actors.get(e.id);
+        if (fig && fig.userData) fig.userData.swingAt = performance.now();
+      }
     }
     if (this.killFeed.length > 5) this.killFeed = this.killFeed.slice(-5);
     const surv = m.alive;
@@ -1012,7 +1082,7 @@ export class SnowApp {
     h2.textContent = won ? '설원의 왕!' : `우승: ${m.winner ? m.winner.name : '-'}`;
     c.appendChild(big); c.appendChild(h2);
     c.appendChild(el('p', 'sr-sub', '잠시 후 방 로비로 돌아갑니다 — 준비를 누르면 리매치!'));
-    c.appendChild(this._btn('타이틀로', () => { this.net && this.net.send({ type: 'leave' }); this._showTitle(); }));
+    c.appendChild(this._btn('타이틀로', () => { this.net && this.net.send({ type: 'leave' }); try { sessionStorage.removeItem('snow_room'); } catch { /* */ }; this._showTitle(); }));
     this.overlay.innerHTML = ''; this.overlay.appendChild(c); this.overlay.style.display = 'flex';
     if (won) this.audio.fanfare();
     this.sceneName = 'result';
@@ -1059,7 +1129,11 @@ export class SnowApp {
       if (e.code === 'Space' && this.sceneName === 'result') { e.preventDefault(); this.newGame(); }
       if (this.sceneName === 'play') {
         if (this.ghost) {
-          if (e.code === 'Enter' && !this.online && this.game) { this.ghost = false; this._showResult(); }
+          if (e.code === 'Enter' || e.code === 'KeyL') {
+            // leave: online -> back to lobby/title, solo -> results screen
+            if (this.online) { this.online = false; this.ghost = false; if (this.net) this.net.send({ type: 'leave' }); try { sessionStorage.removeItem('snow_room'); } catch { /* */ }; this._showTitle(); }
+            else if (this.game) { this.ghost = false; this._showResult(); }
+          }
         } else if (this.online) {
           if (e.code === 'KeyE') this._queuedCraft = true;
           if (e.code === 'KeyQ') this._queuedWall = true;
@@ -1107,7 +1181,11 @@ export class SnowApp {
       if (this.sceneName === 'drop') {
         const r = rect();
         const w = this._dropScreenToWorld(e.clientX - r.left, e.clientY - r.top);
-        if (w) this.dropTarget = w;
+        if (w) {
+          this.dropTarget = w;
+          // online: the server owns positions — send the chosen landing spot
+          if (this.online && this.net) this.net.send({ type: 'input', dropX: w.x, dropY: w.y });
+        }
         return;
       }
       if (this.sceneName === 'play') {
@@ -1131,14 +1209,108 @@ export class SnowApp {
         this.mouse.down = false;
       }
     });
-    this.canvas.addEventListener('touchstart', (e) => { this.audio.resume(); if (this.sceneName === 'play') { this.mouse.down = true; this.mouse.downAt = performance.now(); } e.preventDefault(); }, { passive: false });
-    this.canvas.addEventListener('touchend', (e) => { if (this.sceneName === 'play' && this.mouse.down) { this._throw(performance.now() - this.mouse.downAt); this.mouse.down = false; } e.preventDefault(); }, { passive: false });
+    // mobile: left half = virtual move stick, right half = look; buttons for actions
+    this.isMobile = 'ontouchstart' in window && /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+    if (this.isMobile) this._bindTouch();
+    else {
+      this.canvas.addEventListener('touchstart', (e) => { this.audio.resume(); if (this.sceneName === 'play') { this.mouse.down = true; this.mouse.downAt = performance.now(); } e.preventDefault(); }, { passive: false });
+      this.canvas.addEventListener('touchend', (e) => { if (this.sceneName === 'play' && this.mouse.down) { this._throw(performance.now() - this.mouse.downAt); this.mouse.down = false; } e.preventDefault(); }, { passive: false });
+    }
+  }
+
+  _bindTouch() {
+    this.touch = { moveId: null, moveOx: 0, moveOy: 0, mvx: 0, mvy: 0, lookId: null, lastLx: 0, lastLy: 0 };
+    const onStart = (e) => {
+      this.audio.resume();
+      if (this.sceneName === 'drop') {
+        const t = e.changedTouches[0];
+        const r = this.canvas.getBoundingClientRect();
+        const w = this._dropScreenToWorld(t.clientX - r.left, t.clientY - r.top);
+        if (w) { this.dropTarget = w; if (this.online && this.net) this.net.send({ type: 'input', dropX: w.x, dropY: w.y }); }
+        e.preventDefault(); return;
+      }
+      if (this.sceneName !== 'play') return;
+      for (const t of e.changedTouches) {
+        if (t.clientX < this.vw * 0.42 && this.touch.moveId == null) {
+          this.touch.moveId = t.identifier; this.touch.moveOx = t.clientX; this.touch.moveOy = t.clientY;
+        } else if (this.touch.lookId == null) {
+          this.touch.lookId = t.identifier; this.touch.lastLx = t.clientX; this.touch.lastLy = t.clientY;
+          this.mouse.down = true; this.mouse.downAt = performance.now(); // hold-to-charge on look half
+        }
+      }
+      e.preventDefault();
+    };
+    const onMove = (e) => {
+      for (const t of e.changedTouches) {
+        if (t.identifier === this.touch.moveId) {
+          const dx = t.clientX - this.touch.moveOx, dy = t.clientY - this.touch.moveOy;
+          const len = Math.hypot(dx, dy);
+          const dead = 12, max2 = 60;
+          if (len < dead) { this.touch.mvx = 0; this.touch.mvy = 0; }
+          else {
+            const k = Math.min(1, (len - dead) / max2);
+            this.touch.mvx = (dx / len) * k; this.touch.mvy = (dy / len) * k;
+          }
+        } else if (t.identifier === this.touch.lookId) {
+          const sens = 0.0058;
+          this.yaw += (t.clientX - this.touch.lastLx) * sens;
+          const dir = this.invertY ? -1 : 1;
+          this.pitch = Math.max(-0.85, Math.min(0.85, this.pitch - (t.clientY - this.touch.lastLy) * sens * dir));
+          this.touch.lastLx = t.clientX; this.touch.lastLy = t.clientY;
+        }
+      }
+      e.preventDefault();
+    };
+    const onEnd = (e) => {
+      for (const t of e.changedTouches) {
+        if (t.identifier === this.touch.moveId) { this.touch.moveId = null; this.touch.mvx = 0; this.touch.mvy = 0; }
+        if (t.identifier === this.touch.lookId) {
+          this.touch.lookId = null;
+          if (this.sceneName === 'play' && this.mouse.down) {
+            const held = performance.now() - this.mouse.downAt;
+            const h = this.human, g = this.game;
+            const mgActive = h && h.mg && g && h.mg.ammo > 0;
+            if (held > 120 && !mgActive && !this.ghost) {
+              if (this.online) { if (h && h.snowballs > 0) { this._queuedThrow = E.chargeFromMs(held); } }
+              else this._throw(held);
+            }
+            this.mouse.down = false;
+          }
+        }
+      }
+      e.preventDefault();
+    };
+    this.canvas.addEventListener('touchstart', onStart, { passive: false });
+    this.canvas.addEventListener('touchmove', onMove, { passive: false });
+    this.canvas.addEventListener('touchend', onEnd, { passive: false });
+    this.canvas.addEventListener('touchcancel', onEnd, { passive: false });
+    // action buttons (DOM, above fx canvas)
+    const bar = document.createElement('div'); bar.className = 'sr-touchbar';
+    const mk = (label, cls, fn) => {
+      const b = document.createElement('button'); b.className = 'sr-tbtn ' + cls; b.textContent = label;
+      b.addEventListener('touchstart', (ev) => { ev.preventDefault(); ev.stopPropagation(); this.audio.resume(); fn(); }, { passive: false });
+      bar.appendChild(b); return b;
+    };
+    mk('⤒', 'sr-tbtn-jump', () => {
+      if (this.ghost) return;
+      if (this.online) { this._queuedJump = true; this._jetHold = true; setTimeout(() => { this._jetHold = false; }, 900); }
+      else if (this.human) { this.human.jetHold = true; E.jump(this.game, this.human); setTimeout(() => { if (this.human) this.human.jetHold = false; }, 900); }
+    });
+    mk('👊', 'sr-tbtn-melee', () => { if (this.ghost) return; this.online ? this._queuedMelee = true : this._melee(); });
+    mk('E', 'sr-tbtn-craft', () => { if (this.ghost) return; this.online ? this._queuedCraft = true : this._tryCraft(); });
+    mk('X', 'sr-tbtn-item', () => { if (this.ghost) return; this.online ? this._queuedUse = true : this._useItem(); });
+    mk('Q', 'sr-tbtn-wall', () => { if (this.ghost) return; this.online ? this._queuedWall = true : this._act('wall'); });
+    this.root.appendChild(bar);
+    this.touchBar = bar;
   }
 
   _dropScreenToWorld(sx, sy) {
-    const zoom = Math.min(this.vw, this.vh) / (C.map.size * 1.05);
-    const ox = this.vw / 2 - this.game.zone.cx * zoom, oy = this.vh / 2 - this.game.zone.cy * zoom;
-    return { x: (sx - ox) / zoom, y: (sy - oy) / zoom };
+    // map panel geometry is computed by _renderDrop each frame
+    const m = this._dropMap;
+    if (!m) return null;
+    const x = (sx - m.ox) / m.zoom, y = (sy - m.oy) / m.zoom;
+    if (x < -30 || y < -30 || x > C.map.size + 30 || y > C.map.size + 30) return null; // clicked outside panel
+    return { x: Math.max(0, Math.min(C.map.size, x)), y: Math.max(0, Math.min(C.map.size, y)) };
   }
 
   _tryCraft() {
@@ -1175,8 +1347,9 @@ export class SnowApp {
     if (!r) return;
     if (r.used === 'hardtack') { this.audio.craftDone(); this._toast(`🍪 건빵! +${C.shop.hardtack.healAmount} HP (남은 ${h.item ? h.item.usesLeft : 0}회)`); }
     if (r.used === 'charge') { this.audio.fanfare(); this._toast(`⚗️ 돌격! ${C.shop.charge.durationSec}초 무적 — 부딪히면 날아간다!`, 4000); }
-    if (r.used === 'sleepgun') { this.audio.throw(); this._toast('🔫 수면탄 발사!'); }
-    if (r.used === 'grenade') { this.audio.throw(); this._toast('💣 수류탄 투척 — 3초 후 폭발!'); }
+    if (r.used === 'sleepgun') { this.audio.throw(); this._toast(`🔫 수면탄 발사! (남은 ${r.left}발)`); }
+    if (r.used === 'grenade') { this.audio.throw(); this._toast(`💣 수류탄 투척 — 3초 후 폭발! (남은 ${r.left}개)`); }
+    if (r.used === 'rocket') { this.audio.throw(); this.viewKick = 1; this._toast(`🧨 폭축 발사!! (남은 ${r.left}발)`); }
   }
 
   // ---- per-frame update -------------------------------------------------------
@@ -1184,7 +1357,8 @@ export class SnowApp {
     if (!this.game) return;
     if (this.sceneName === 'drop') {
       this.dropT += dt;
-      if (this.dropT >= 8) this._enterPlay();
+      // online: the server announces play_begin; solo enters after 8s
+      if (!this.online && this.dropT >= 8) this._enterPlay();
       return;
     }
     if (this.sceneName !== 'play') return;
@@ -1200,6 +1374,7 @@ export class SnowApp {
       if (this.keys['KeyS'] || this.keys['ArrowDown']) f -= 1;
       if (this.keys['KeyD'] || this.keys['ArrowRight']) r += 1;
       if (this.keys['KeyA'] || this.keys['ArrowLeft']) r -= 1;
+      if (this.touch && (this.touch.mvx || this.touch.mvy)) { f = -this.touch.mvy; r = this.touch.mvx; }
       h.cover = !!this.keys['KeyC'];
       if (f || r) {
         const cos = Math.cos(this.yaw), sin = Math.sin(this.yaw);
@@ -1239,6 +1414,15 @@ export class SnowApp {
         if (by && v) this.killFeed.push({ text: `${by.name} ❄→ ${v.name}`, until: performance.now() + 4200 });
       }
       if (e.type === 'pad' && e.id === h.id) { this.audio.throw(); this._toast('🌀 스프링 점프!', 1500); }
+      if (e.type === 'swing' && e.id !== h.id) {
+        const fig = this.actors.get(e.id);
+        if (fig && fig.userData) fig.userData.swingAt = performance.now();
+      }
+      if (e.type === 'placeReward' && e.id === h.id) {
+        this._bankCaps(e.amount);
+        this.capsFxUntil = performance.now() + 2000; this.capsFxAmount = e.amount;
+        this._toast(`🏅 ${e.place}등 보상 — 병뚜껑 +${e.amount}!`, 4500);
+      }
       if (e.type === 'shieldBlock' && e.id === h.id) {
         this.shieldFlashUntil = performance.now() + 300;
         this.audio.wall();
@@ -1288,11 +1472,18 @@ export class SnowApp {
     if (this.keys['KeyS'] || this.keys['ArrowDown']) f -= 1;
     if (this.keys['KeyD'] || this.keys['ArrowRight']) r += 1;
     if (this.keys['KeyA'] || this.keys['ArrowLeft']) r -= 1;
+    if (this.touch && (this.touch.mvx || this.touch.mvy)) { f = -this.touch.mvy; r = this.touch.mvx; }
     const cos = Math.cos(this.yaw), sin = Math.sin(this.yaw);
     this.ghostPos.x = Math.max(0, Math.min(C.map.size, this.ghostPos.x + (cos * f - sin * r) * sp));
     this.ghostPos.y = Math.max(0, Math.min(C.map.size, this.ghostPos.y + (sin * f + cos * r) * sp));
     if (this.keys['Space']) this.ghostPos.z = Math.min(400, this.ghostPos.z + 160 * dt);
-    if (this.keys['KeyC']) this.ghostPos.z = Math.max(10, this.ghostPos.z - 160 * dt);
+    if (this.keys['KeyC'] || this.keys['ShiftLeft'] || this.keys['ShiftRight'] || this.keys['ControlLeft']) {
+      this.ghostPos.z = Math.max(10, this.ghostPos.z - 160 * dt);
+    }
+    // look down + move forward also descends (natural fly-cam feel)
+    if (this.pitch < -0.25 && (this.keys['KeyW'] || this.keys['ArrowUp'])) {
+      this.ghostPos.z = Math.max(10, this.ghostPos.z + Math.sin(this.pitch) * 200 * dt);
+    }
   }
 
   // solo ghost: keep kill feed / zone warnings flowing while spectating
@@ -1302,6 +1493,10 @@ export class SnowApp {
       if (e.type === 'kill') {
         const by = g.players.find((p) => p.id === e.by), v = g.players.find((p) => p.id === e.victim);
         if (by && v) this.killFeed.push({ text: `${by.name} ❄→ ${v.name}`, until: performance.now() + 4200 });
+      }
+      if (e.type === 'placeReward' && this.human && e.id === this.human.id) {
+        this._bankCaps(e.amount);
+        this._toast(`🏅 ${e.place}등 보상 — 병뚜껑 +${e.amount}!`, 4500);
       }
     }
     if (this.killFeed.length > 5) this.killFeed = this.killFeed.slice(-5);
@@ -1318,6 +1513,7 @@ export class SnowApp {
     if (this.keys['KeyS'] || this.keys['ArrowDown']) f -= 1;
     if (this.keys['KeyD'] || this.keys['ArrowRight']) r += 1;
     if (this.keys['KeyA'] || this.keys['ArrowLeft']) r -= 1;
+    if (this.touch && (this.touch.mvx || this.touch.mvy)) { f = -this.touch.mvy; r = this.touch.mvx; }
     const cos = Math.cos(this.yaw), sin = Math.sin(this.yaw);
     const mvx = f || r ? cos * f - sin * r : 0;
     const mvy = f || r ? sin * f + cos * r : 0;
@@ -1358,6 +1554,13 @@ export class SnowApp {
       const bob = Math.sin(this.bobT) * 0.8;
       camX = h.x; camY = EYE + bob + (h.z || 0); camZ = h.y; // jump/pad/tower height raises the camera
     }
+    // explosion camera shake
+    if (this.shakeUntil && now < this.shakeUntil) {
+      const s2 = (this.shakeUntil - now) / 320;
+      camX += (Math.random() - 0.5) * 4 * s2;
+      camY += (Math.random() - 0.5) * 3 * s2;
+      camZ += (Math.random() - 0.5) * 4 * s2;
+    }
     this.camera.position.set(camX, camY, camZ);
     const lookX = camX + Math.cos(this.yaw) * Math.cos(this.pitch) * 10;
     const lookY = camY + Math.sin(this.pitch) * 10;
@@ -1377,7 +1580,24 @@ export class SnowApp {
       const swing = Math.sin(now / 130 + p.id) * 0.5;
       const ud = fig.userData;
       if (ud.legL) { ud.legL.rotation.x = swing; ud.legR.rotation.x = -swing; }
-      if (p.crafting) { ud.armL.rotation.x = -1.2; ud.armR.rotation.x = -1.2; }
+      // club in hand: attach a bat to the right arm while the player has one
+      if (p.hasClub && !ud.clubMesh) {
+        const bat = new THREE.Mesh(
+          new THREE.CylinderGeometry(CHAR_SCALE * 0.08, CHAR_SCALE * 0.16, CHAR_SCALE * 1.1, 8),
+          new THREE.MeshStandardMaterial({ color: 0x9c6b3f, roughness: 0.85 }),
+        );
+        bat.position.set(0, -CHAR_SCALE * 0.75, CHAR_SCALE * 0.1);
+        bat.rotation.x = Math.PI / 2.4;
+        ud.armR.add(bat); ud.clubMesh = bat;
+      }
+      if (ud.clubMesh) ud.clubMesh.visible = !!p.hasClub;
+      // melee swing animation overrides arm pose briefly
+      const swingAge = ud.swingAt ? (now - ud.swingAt) / 280 : 99;
+      if (swingAge < 1) {
+        ud.armR.rotation.x = -2.4 + swingAge * 2.6; // overhead chop
+        ud.armL.rotation.x = swing * 0.5;
+      } else if (p.crafting) { ud.armL.rotation.x = -1.2; ud.armR.rotation.x = -1.2; }
+      else if (p.hasClub) { ud.armR.rotation.x = -0.5; ud.armL.rotation.x = swing * 0.5; } // ready stance
       else { ud.armL.rotation.x = swing * 0.5; ud.armR.rotation.x = -swing * 0.5; }
       // sleep: figure tips sideways + slow spin nap
       if (p.sleepUntil > g.t) {
@@ -1482,23 +1702,70 @@ export class SnowApp {
       if (!seen.has(id)) { this.scene3.remove(m); this.sbMeshes.delete(id); }
     }
 
-    // walls
+    // walls: tall translucent energy barrier (Fortnite-style) — you can see
+    // through it and watch shots splat against the surface
     const wallSeen = new Set();
     for (const w of g.walls) {
       wallSeen.add(w.id);
       let m = this.wallMeshes.get(w.id);
       if (!m) {
-        m = new THREE.Mesh(
-          new THREE.BoxGeometry(C.wall.len, 16, 6),
-          new THREE.MeshStandardMaterial({ color: 0xeaf4fb, roughness: 0.9 }),
+        m = new THREE.Group();
+        const H = C.wall.height || 26;
+        const panel = new THREE.Mesh(
+          new THREE.BoxGeometry(C.wall.len, H, 2),
+          new THREE.MeshBasicMaterial({ color: 0x7fd4ff, transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }),
         );
-        m.position.set(w.x, 8, w.y);
+        panel.position.y = H / 2; m.add(panel);
+        // frame edges for readability
+        const edgeMat = new THREE.MeshBasicMaterial({ color: 0xbfeaff, transparent: true, opacity: 0.8 });
+        for (const [ex, ey, ew, eh] of [[0, H, C.wall.len, 1.2], [0, 0.6, C.wall.len, 1.2], [-C.wall.len / 2, H / 2, 1.2, H], [C.wall.len / 2, H / 2, 1.2, H]]) {
+          const edge = new THREE.Mesh(new THREE.BoxGeometry(ew, eh, 2.4), edgeMat);
+          edge.position.set(ex, ey, 0); m.add(edge);
+        }
+        // durability bar floating on top
+        const cv = document.createElement('canvas'); cv.width = 64; cv.height = 10;
+        const tex = new THREE.CanvasTexture(cv);
+        const bar = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }));
+        bar.scale.set(22, 3.4, 1); bar.position.y = H + 5;
+        m.add(bar);
+        m.userData = { panel, bar, cv, tex, lastHp: -1, splats: [] };
+        m.position.set(w.x, 0, w.y);
         m.rotation.y = -w.angle;
         this.scene3.add(m);
         this.wallMeshes.set(w.id, m);
       }
-      // crack tint as durability drops
-      m.material.color.setHex(w.hp >= 3 ? 0xeaf4fb : w.hp === 2 ? 0xd9e6f0 : 0xc4d4e2);
+      const ud = m.userData;
+      // hp bar redraw on change
+      if (ud.lastHp !== w.hp) {
+        const x = ud.cv.getContext('2d');
+        x.clearRect(0, 0, 64, 10);
+        x.fillStyle = 'rgba(0,0,0,0.6)'; x.fillRect(0, 0, 64, 10);
+        const frac = Math.max(0, w.hp / C.wall.durability);
+        x.fillStyle = frac > 0.5 ? '#7fd4ff' : frac > 0.25 ? '#FF6B35' : '#DC143C';
+        x.fillRect(1, 1, 62 * frac, 8);
+        ud.tex.needsUpdate = true; ud.lastHp = w.hp;
+        ud.panel.material.opacity = 0.14 + frac * 0.12; // fades as it weakens
+      }
+      // flash + splat on recent hit
+      if (w.lastHitAt != null && g.t - w.lastHitAt < 0.25) {
+        ud.panel.material.opacity = 0.5;
+        if (!ud.lastSplatAt || ud.lastSplatAt !== w.lastHitAt) {
+          ud.lastSplatAt = w.lastHitAt;
+          const splat = new THREE.Mesh(
+            new THREE.CircleGeometry(3.6, 10),
+            new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, depthWrite: false }),
+          );
+          splat.position.set((Math.random() - 0.5) * C.wall.len * 0.7, 6 + Math.random() * (C.wall.height - 10), 1.4);
+          m.add(splat); ud.splats.push({ mesh: splat, at: now });
+        }
+      }
+      // fade old splats
+      ud.splats = ud.splats.filter((s2) => {
+        const age = (now - s2.at) / 1000;
+        if (age > 3) { m.remove(s2.mesh); return false; }
+        s2.mesh.material.opacity = 0.9 * (1 - age / 3);
+        return true;
+      });
     }
     for (const [id, m] of this.wallMeshes) if (!wallSeen.has(id)) { this.scene3.remove(m); this.wallMeshes.delete(id); }
 
@@ -1563,27 +1830,81 @@ export class SnowApp {
         let m = this.grenadeMeshes.get(gr.id);
         if (!m) {
           m = new THREE.Group();
-          const ball = new THREE.Mesh(new THREE.SphereGeometry(5, 12, 10), new THREE.MeshStandardMaterial({ color: 0xf0f6fa, roughness: 0.5, emissive: 0x8899aa, emissiveIntensity: 0.3 }));
-          m.add(ball);
+          // big detailed white SNOW grenade: packed-snow sphere + ice band +
+          // stem cap + pin ring, blinking red fuse light
+          const body = new THREE.Group();
+          const ball = new THREE.Mesh(new THREE.SphereGeometry(9, 16, 14), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.65, emissive: 0xaabfcf, emissiveIntensity: 0.25 }));
+          body.add(ball);
+          for (let ci = 0; ci < 5; ci++) { // packed-snow clumps
+            const clump = new THREE.Mesh(new THREE.SphereGeometry(2.6, 8, 6), new THREE.MeshStandardMaterial({ color: 0xf1f7fb, roughness: 0.9 }));
+            const a = ci * 2.4;
+            clump.position.set(Math.cos(a) * 7, Math.sin(a * 1.3) * 6, Math.sin(a) * 7);
+            body.add(clump);
+          }
+          const band = new THREE.Mesh(new THREE.TorusGeometry(9.2, 1, 8, 24), new THREE.MeshStandardMaterial({ color: 0x9fd8f0, roughness: 0.4, metalness: 0.3 }));
+          band.rotation.x = Math.PI / 2; body.add(band);
+          const cap = new THREE.Mesh(new THREE.CylinderGeometry(2.6, 3.2, 4, 10), new THREE.MeshStandardMaterial({ color: 0x8a97a5, metalness: 0.6, roughness: 0.4 }));
+          cap.position.y = 10.5; body.add(cap);
+          const pin = new THREE.Mesh(new THREE.TorusGeometry(2, 0.5, 6, 14), new THREE.MeshStandardMaterial({ color: 0xd4a017, metalness: 0.7, roughness: 0.3 }));
+          pin.position.set(3.4, 11, 0); pin.rotation.y = Math.PI / 3; body.add(pin);
+          const fuse = new THREE.Mesh(new THREE.SphereGeometry(1.4, 8, 6), new THREE.MeshBasicMaterial({ color: 0xff3030 }));
+          fuse.position.y = 13; body.add(fuse);
+          m.add(body);
+          // danger zone: filled disc + rim ring (much more readable than rim alone)
+          const zone = new THREE.Mesh(
+            new THREE.CircleGeometry(gr.radius, 48),
+            new THREE.MeshBasicMaterial({ color: 0xff3b30, transparent: true, opacity: 0.12, side: THREE.DoubleSide, depthWrite: false }),
+          );
+          zone.rotation.x = -Math.PI / 2; zone.position.y = 0.7;
           const ring = new THREE.Mesh(
-            new THREE.RingGeometry(gr.radius - 3, gr.radius, 40),
-            new THREE.MeshBasicMaterial({ color: 0xff4444, transparent: true, opacity: 0.4, side: THREE.DoubleSide, depthWrite: false }),
+            new THREE.RingGeometry(gr.radius - 3.5, gr.radius, 48),
+            new THREE.MeshBasicMaterial({ color: 0xff3b30, transparent: true, opacity: 0.5, side: THREE.DoubleSide, depthWrite: false }),
           );
           ring.rotation.x = -Math.PI / 2; ring.position.y = 0.8;
-          m.userData.ring = ring; m.userData.ball = ball;
-          this.scene3.add(ring); this.scene3.add(m);
+          m.userData = { ring, zone, body, fuse, boomAt: null };
+          this.scene3.add(zone); this.scene3.add(ring); this.scene3.add(m);
           this.grenadeMeshes.set(gr.id, m);
         }
-        m.position.set(gr.x, (gr.z || 0) + 4, gr.y);
-        const ring = m.userData.ring;
+        m.position.set(gr.x, (gr.z || 0) + 6, gr.y);
+        m.rotation.y = now / 300; m.rotation.z = now / 500; // tumble in flight
+        const { ring, zone, body, fuse } = m.userData;
         ring.position.set(gr.lx, 0.8, gr.ly);
-        ring.visible = true;
+        zone.position.set(gr.lx, 0.7, gr.ly);
         const left = gr.explodeAt - g.t;
-        ring.material.opacity = 0.25 + Math.abs(Math.sin(now / (left < 1 ? 60 : 160))) * 0.4; // faster pulse near boom
-        if (gr.exploded) { m.userData.ball.visible = false; ring.material.opacity = 0.9; ring.scale.setScalar(1 + (g.t - gr.explodeAt) * 2); }
+        const pulseHz = left < 1 ? 60 : 160;
+        ring.material.opacity = 0.35 + Math.abs(Math.sin(now / pulseHz)) * 0.45;
+        zone.material.opacity = 0.08 + Math.abs(Math.sin(now / pulseHz)) * 0.12;
+        fuse.material.color.setHex(Math.sin(now / pulseHz) > 0 ? 0xff3030 : 0x661010); // blink
+        if (gr.exploded) {
+          body.visible = false;
+          if (!m.userData.boomAt) {
+            m.userData.boomAt = now;
+            this._spawnBoomFx(gr.lx, gr.ly, gr.radius);
+            this.audio.hit();
+            if (this.shakeUntil == null || this.shakeUntil < now + 320) this.shakeUntil = now + 320;
+          }
+          const bt = (now - m.userData.boomAt) / 500;
+          ring.material.opacity = Math.max(0, 0.9 - bt);
+          zone.material.opacity = Math.max(0, 0.5 - bt);
+          ring.scale.setScalar(1 + bt * 1.6);
+        }
       }
       for (const [id, m] of this.grenadeMeshes) {
-        if (!gseen.has(id)) { this.scene3.remove(m); this.scene3.remove(m.userData.ring); this.grenadeMeshes.delete(id); }
+        if (!gseen.has(id)) { this.scene3.remove(m); this.scene3.remove(m.userData.ring); this.scene3.remove(m.userData.zone); this.grenadeMeshes.delete(id); }
+      }
+      // snow burst particles fly out and settle
+      if (this._boomFx) {
+        this._boomFx = this._boomFx.filter((fx) => {
+          const age = (now - fx.at) / 1000;
+          if (age > 1.1) { this.scene3.remove(fx.grp); return false; }
+          fx.grp.children.forEach((c2, i) => {
+            const sp = fx.speeds[i];
+            c2.position.x += sp.x * 0.016; c2.position.z += sp.z * 0.016;
+            c2.position.y = Math.max(1, c2.position.y + sp.y * 0.016 - age * 2.4);
+            c2.material.opacity = Math.max(0, 0.95 - age);
+          });
+          return true;
+        });
       }
     }
     // jump pad plates pulse
@@ -1739,7 +2060,7 @@ export class SnowApp {
       ctx.fillStyle = 'rgba(13,27,42,0.75)';
       ctx.fillRect(this.vw / 2 - 190, 14, 380, 34);
       ctx.fillStyle = '#A8D8EA'; ctx.font = 'bold 14px system-ui'; ctx.textAlign = 'center';
-      ctx.fillText(`👻 관전 중 · 생존 ${this._lastSurvivors ?? ''}${this.online ? '' : ' · Enter=결과'}`, this.vw / 2, 36);
+      ctx.fillText(`👻 관전 중 · 생존 ${this._lastSurvivors ?? ''} · Space 상승 / C 하강 · Enter=나가기`, this.vw / 2, 36);
       return;
     }
     const h = this.human;
@@ -1753,6 +2074,16 @@ export class SnowApp {
       const gEdge = ctx.createRadialGradient(this.vw / 2, this.vh / 2, this.vh * 0.35, this.vw / 2, this.vh / 2, this.vh * 0.75);
       gEdge.addColorStop(0, 'rgba(220,20,60,0)'); gEdge.addColorStop(1, 'rgba(220,20,60,0.5)');
       ctx.fillStyle = gEdge; ctx.fillRect(0, 0, this.vw, this.vh);
+    }
+    // charge potion: pulsing red flash so the rampage is unmistakable
+    if (E.chargeActive(g, h)) {
+      const pulse = 0.18 + Math.abs(Math.sin(now / 130)) * 0.22;
+      const gEdge = ctx.createRadialGradient(this.vw / 2, this.vh / 2, this.vh * 0.3, this.vw / 2, this.vh / 2, this.vh * 0.75);
+      gEdge.addColorStop(0, 'rgba(255,60,30,0)'); gEdge.addColorStop(1, `rgba(255,60,30,${pulse})`);
+      ctx.fillStyle = gEdge; ctx.fillRect(0, 0, this.vw, this.vh);
+      ctx.fillStyle = `rgba(255,80,40,${0.5 + Math.sin(now / 130) * 0.3})`;
+      ctx.font = 'bold 20px system-ui'; ctx.textAlign = 'center';
+      ctx.fillText(`⚗️ 돌격!! ${Math.ceil(h.chargeUntil - g.t)}초`, this.vw / 2, 70);
     }
     // shield: steady blue edge glow while held, bright flash on block
     if (h.shieldHits > 0 || now < (this.shieldFlashUntil || 0)) {
@@ -1830,6 +2161,24 @@ export class SnowApp {
     ctx.fillStyle = '#FF6B35'; ctx.beginPath(); ctx.ellipse(hx + 16, hy + 2, 20, 12, -0.5, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = '#2c3e63';
     ctx.beginPath(); ctx.ellipse(hx, hy - 6, 24, 19, -0.35, 0, Math.PI * 2); ctx.fill();
+    // club in hand: wooden bat sticking up from the fist, swings on F
+    if (h.hasClub) {
+      const swingAge = this.meleeSwingAt ? (now - this.meleeSwingAt) / 280 : 99;
+      const swingRot = swingAge < 1 ? -1.1 + swingAge * 1.3 : -0.35;
+      ctx.save();
+      ctx.translate(hx - 4, hy - 8);
+      ctx.rotate(swingRot);
+      const grad = ctx.createLinearGradient(0, 0, 0, -95);
+      grad.addColorStop(0, '#7a5230'); grad.addColorStop(1, '#a97c4f');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.moveTo(-5, 0); ctx.lineTo(5, 0); ctx.lineTo(9, -78); ctx.lineTo(-9, -78);
+      ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(0, -80, 9.5, 7, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#5f3f24'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(-4, -20); ctx.lineTo(4, -22); ctx.stroke();
+      ctx.restore();
+    }
     if (h.snowballs > 0 && !h.crafting) {
       ctx.fillStyle = '#ffffff'; ctx.strokeStyle = '#bcd7e8';
       ctx.beginPath(); ctx.arc(hx - 6, hy - 18, 15 + charge * 3, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
@@ -1891,6 +2240,7 @@ export class SnowApp {
 
   // ---- HUD (DOM) ---------------------------------------------------------------
   _renderHud() {
+    if (this.touchBar) this.touchBar.className = 'sr-touchbar' + (this.sceneName === 'play' && !this.ghost ? ' on' : '');
     if (this.sceneName !== 'play' && this.sceneName !== 'drop') { this.hud.style.display = 'none'; return; }
     this.hud.style.display = 'block';
     const g = this.game, h = this.human;
